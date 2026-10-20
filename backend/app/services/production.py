@@ -15,19 +15,25 @@ from .common import D, audit, get_or_404, next_no
 from .drawings import assert_confirmed, assert_not_held
 from . import protection as prot
 from .inventory import default_warehouse, stock_in
+from .kitting import acquire_mutex
 
 
 def freeze_bom(db: Session, material_id: int, order_id: int | None = None) -> str | None:
     """建单时冻结批准 BOM。关联订单且订单快照里有这个自制/外协件 → 用订单下达时冻结的那一版（与订单批准的版本一致）；
-    否则取当前生效 BOM。找不到 BOM 返回 None（开工前必须补齐，空 BOM 视为“明确无物料投入”）。"""
+    否则取当前生效 BOM。找不到 BOM 返回 None（开工前必须补齐，空 BOM 仍须物料明确批准免投料）。"""
     if order_id:
         o = db.get(SalesOrder, order_id)
         if o and o.bom_snapshot:
             tree = json.loads(o.bom_snapshot)
             if str(material_id) in tree:
-                return json.dumps(tree[str(material_id)], ensure_ascii=False)
+                lines = tree[str(material_id)]
+                # 订单树把无下级的节点也记作 []；它不是“批准免投料”的凭据。
+                m = db.get(Material, material_id)
+                if not lines and not (m and m.bom_exempt):
+                    return None
+                return json.dumps(lines, ensure_ascii=False)
     b = db.scalar(select(Bom).where(Bom.material_id == material_id, Bom.status == "ACTIVE"))
-    if not b:
+    if not b or not b.lines:
         m = db.get(Material, material_id)
         return "[]" if m is not None and m.bom_exempt else None  # 只有明确勾选“免 BOM”的工艺才允许无物料投入
     return json.dumps([[ln.child_id, str(D(ln.qty_per) * (1 + D(ln.scrap_rate)))] for ln in b.lines], ensure_ascii=False)
@@ -40,7 +46,11 @@ def _ensure_bom(db: Session, doc, what: str) -> list[tuple[int, Decimal]]:
         if doc.bom_snapshot is None:
             raise BizError(f"{what}的物料没有生效的 BOM，不能开工/领料/报工。请技术先维护 BOM"
                            "（确无物料投入的工艺，请技术在物料上明确勾选“免 BOM（无物料投入）”）")
-    return prot.bom_lines(db, doc)
+    lines = prot.bom_lines(db, doc)
+    m = db.get(Material, doc.material_id)
+    if not lines and not (m and m.bom_exempt):
+        raise BizError(f"{what}没有有效 BOM，空快照不代表免投料；请技术维护 BOM 或明确批准免 BOM")
+    return lines
 
 
 def create_wo(db: Session, user: User, data: dict) -> WorkOrder:
@@ -81,7 +91,9 @@ def start_wo(db: Session, user: User, wo_id: int) -> WorkOrder:
 
 def report_wo(db: Session, user: User, wo_id: int, qty: Decimal, warehouse_id: int | None = None) -> WorkOrder:
     """报工完工：完工数量入生产库，成为可预占库存。"""
-    w = db.scalar(select(WorkOrder).where(WorkOrder.id == wo_id).with_for_update())  # 行锁：并发报工不超量
+    db.flush()  # 保留同一事务前一步服务调用的合法变更，再刷新锁定状态
+    acquire_mutex(db)  # 与领料、退料、完工统一：先全局互斥，再锁业务单据
+    w = db.scalar(select(WorkOrder).where(WorkOrder.id == wo_id).with_for_update().execution_options(populate_existing=True))  # 行锁：并发报工不超量
     if w is None:
         raise BizError("自制任务不存在", 404)
     if w.status != "STARTED":
@@ -152,7 +164,11 @@ def update_outsource(db: Session, user: User, os_id: int, data: dict) -> Outsour
 
 
 def send_outsource(db: Session, user: User, os_id: int, sent_date: date | None = None) -> OutsourceOrder:
-    o = get_or_404(db, OutsourceOrder, os_id, "外协单")
+    db.flush()  # 保留同一事务前一步服务调用的合法变更，再刷新锁定状态
+    acquire_mutex(db)
+    o = db.scalar(select(OutsourceOrder).where(OutsourceOrder.id == os_id).with_for_update().execution_options(populate_existing=True))
+    if o is None:
+        raise BizError("外协单不存在", 404)
     if o.status != "PLANNED":
         raise BizError("外协单已发出")
     assert_confirmed(db, "OUTSOURCE", o.id)  # 发外协前确认图纸版本

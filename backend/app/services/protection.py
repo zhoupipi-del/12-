@@ -2,7 +2,7 @@
 
 占用来源（同一套口径，领料、调拨都用它）：
   1. 订单的库存预占（Reservation，source=STOCK：人工锁定 + 冻结）
-  2. 在制自制任务（计划/开工）和本厂供料外协单的【未领原料】需求
+  2. 齐套引擎实际分给自制任务和本厂供料外协单的未领现存量（不是全部需求）
 自己的占用不挡自己；别人的占用，要走“调料申请”审批腾出，不能从出库口绕过。
 """
 from __future__ import annotations
@@ -13,8 +13,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import (Bom, OutsourceOrder, PickLine, PickList, Reservation, StockLot, Warehouse, WarehousePurpose,
-                      WorkOrder, ZERO)
+from ..models import (Bom, PickLine, PickList, Reservation, StockLot, Warehouse, WarehousePurpose, ZERO)
 from .common import D
 
 
@@ -48,23 +47,17 @@ def own_reserved(db: Session, material_id: int, order_id: int | None) -> Decimal
         Reservation.material_id == material_id, Reservation.source_type == "STOCK", Reservation.order_id == order_id)))
 
 
-def task_demand_others(db: Session, material_id: int, wo_id: int | None = None, os_id: int | None = None) -> Decimal:
-    """在制自制任务 / 本厂供料外协单对该物料的未领需求（排除自己）。"""
-    total = ZERO
-    for w in db.scalars(select(WorkOrder).where(WorkOrder.status.in_(["PLANNED", "STARTED"]))).all():
-        if wo_id and w.id == wo_id:
-            continue
-        for cid, per in bom_lines(db, w):
-            if cid == material_id:
-                total += max(per * D(w.qty) - issued_net(db, PickList.work_order_id, w.id, cid), ZERO)
-    for o in db.scalars(select(OutsourceOrder).where(OutsourceOrder.status == "PLANNED",
-                                                      OutsourceOrder.supply_mode == "CONSIGNED")).all():
-        if os_id and o.id == os_id:
-            continue
-        for cid, per in bom_lines(db, o):
-            if cid == material_id:
-                total += max(per * D(o.qty) - issued_net(db, PickList.outsource_id, o.id, cid), ZERO)
-    return total
+def task_stock_others(db: Session, material_id: int, wo_id: int | None = None, os_id: int | None = None) -> Decimal:
+    """只保护齐套引擎实际分给任务的现存量，缺口/在途不能锁住现存库存。
+
+    与看板共用同一算法：人工锁料、已开工任务、订单冻结、未开工任务；
+    任务同组按计划日期、类型、ID 排序，实存只分配一次。全局互斥由写入调用方持有。
+    """
+    from .kitting import compute, load_snapshot
+    grants = compute(load_snapshot(db)).production_stock
+    return sum((qty for (kind, ref, mid), qty in grants.items()
+                if mid == material_id and not (kind == "WO" and ref == wo_id)
+                and not (kind == "OUTSOURCE" and ref == os_id)), ZERO)
 
 
 def onhand_production(db: Session, material_id: int, warehouse_id: int | None = None) -> Decimal:
@@ -77,7 +70,8 @@ def onhand_production(db: Session, material_id: int, warehouse_id: int | None = 
 
 def free_to_issue(db: Session, material_id: int, warehouse_id: int, *, order_id: int | None = None,
                   wo_id: int | None = None, os_id: int | None = None) -> Decimal:
-    """某个单据此刻最多能从该仓领/转走多少：实存 − 他人占用；自己的预占至少可用。"""
-    on = onhand_production(db, material_id, warehouse_id)
-    others = reserved_by_others(db, material_id, order_id) + task_demand_others(db, material_id, wo_id, os_id)
-    return max(on - others, own_reserved(db, material_id, order_id), ZERO) if order_id else max(on - others, ZERO)
+    """某个单据此刻最多能从该仓领/转走多少：全库实存减他人实际占用，并受该仓实存上限约束。"""
+    db.flush()
+    on = onhand_production(db, material_id)
+    others = reserved_by_others(db, material_id, order_id) + task_stock_others(db, material_id, wo_id, os_id)
+    return min(onhand_production(db, material_id, warehouse_id), max(on - others, ZERO))

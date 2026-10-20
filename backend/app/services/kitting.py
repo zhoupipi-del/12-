@@ -142,6 +142,7 @@ class KitResult:
     orders: dict[int, OrderOut]
     reservations: list[dict]  # 新的非锁定预占
     shortages: dict[int, dict]  # 物料 → {qty, need_date, orders:[...]}
+    production_stock: dict[tuple[str, int, int], Decimal] = field(default_factory=dict)  # 实际分配的现存量，不能用全部需求代替
 
 
 # ------------------------------------------------------------------ 纯计算（无数据库，便于单测）
@@ -169,6 +170,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
     reservations: list[dict] = []
     shortages: dict[int, dict] = {}
     results: dict[int, OrderOut] = {}
+    production_stock: dict[tuple[str, int, int], Decimal] = defaultdict(lambda: ZERO)
 
     # (A) 人工锁定预占：专属订单，最先扣出
     locked_pool: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
@@ -191,6 +193,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
             t = min(max(pool.get(mid, ZERO), ZERO), remain)
             if t > 0:
                 pool[mid] = pool.get(mid, ZERO) - t
+                production_stock[(d.kind, d.id, mid)] += t
                 remain -= t
             for s in incoming.get(mid, []):
                 if remain <= 0:
@@ -209,7 +212,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
                 s.date = FAR_FUTURE if short else max(s.date, ready)
                 s.confirmed = s.confirmed and not short
 
-    ordered = sorted(snap.prod_demands, key=lambda d: (not d.started, d.planned, d.id))
+    ordered = sorted(snap.prod_demands, key=lambda d: (not d.started, d.planned, d.kind, d.id))
     for d in ordered:
         if d.started:
             claim_prod(d)
@@ -341,7 +344,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
                 frozen_pool[(oid, mid)] = ZERO
         results[order.id] = _summarize(order, lines, snap)
 
-    return KitResult(results, reservations, shortages), dict(frozen_used)
+    return KitResult(results, reservations, shortages, dict(production_stock)), dict(frozen_used)
 
 
 def _summarize(order: OrderIn, lines: list[LineOut], snap: Snapshot) -> OrderOut:

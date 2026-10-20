@@ -17,6 +17,7 @@ from .common import D, audit, get_or_404, next_no
 from .drawings import assert_confirmed, assert_not_held
 from . import protection as prot
 from .protection import reserved_by_others
+from .kitting import acquire_mutex
 from .inventory import available, default_warehouse, fifo_out, stock_in
 
 
@@ -199,8 +200,10 @@ def create_pick(db: Session, user: User, order_id: int, lines: list[dict] | None
 
 
 def post_pick(db: Session, user: User, pick_id: int) -> PickList:
+    db.flush()  # 保留同一事务前一步服务调用的合法变更，再刷新锁定状态
+    acquire_mutex(db)  # 先互斥再锁单据，与报工/退料/完工保持相同顺序
     # 行锁：同一张领料单被重复提交/并发过账时，后到者会看到 POSTED 而被拒绝，不会重复扣库存
-    pk = db.scalar(select(PickList).where(PickList.id == pick_id).with_for_update())
+    pk = db.scalar(select(PickList).where(PickList.id == pick_id).with_for_update().execution_options(populate_existing=True))
     if pk is None:
         raise BizError("领料单不存在", 404)
     if pk.status != "DRAFT":
@@ -221,8 +224,6 @@ def post_pick(db: Session, user: User, pick_id: int) -> PickList:
         if osd is None or osd.status not in ("PLANNED", "SENT", "PARTIAL"):
             raise BizError("来源外协单已结束或取消，该领料单不能过账（请作废）")
         assert_not_held(db, "OUTSOURCE", pk.outsource_id)
-    from .kitting import acquire_mutex
-    acquire_mutex(db)  # 与锁料/重算/调料串行：判断“能不能领”和“扣库存”之间，别人的预占不会变
     pk.status = "POSTING"
     for ln in pk.lines:
         if D(ln.qty) <= 0:
@@ -296,9 +297,19 @@ def return_pick(db: Session, user: User, pick_id: int, lines: list[dict], reason
     """退料：已过账领料单的部分/全部退回生产库（新批次入库），订单已领量同步减少。原领料记录保留。"""
     if not reason:
         raise BizError("退料必须填写原因")
-    pk = db.scalar(select(PickList).where(PickList.id == pick_id).with_for_update())
+    # 先拒绝重复行，整笔请求尚未发生库存/台账变更；不得把每行各自的可退额重复使用。
+    mids = [item["material_id"] for item in lines]
+    if len(mids) != len(set(mids)):
+        raise BizError("退料物料不能重复，请合并同一物料的数量后提交")
+    db.flush()  # 保留同一事务前一步服务调用的合法变更，再刷新锁定状态
+    acquire_mutex(db)
+    pk = db.scalar(select(PickList).where(PickList.id == pick_id).with_for_update().execution_options(populate_existing=True))
     if pk is None or pk.status != "POSTED":
         raise BizError("只有已过账的领料单才能退料")
+    # 消耗量与已领量共用来源锁，防止另一张领料单退料或报工同时改变可退总额。
+    source, ref = ((SalesOrder, pk.order_id) if pk.order_id else
+                   (WorkOrder, pk.work_order_id) if pk.work_order_id else (OutsourceOrder, pk.outsource_id))
+    db.scalar(select(source).where(source.id == ref).with_for_update().execution_options(populate_existing=True))
     by_mat = {ln.material_id: ln for ln in pk.lines}
     for item in lines:
         ln = by_mat.get(item["material_id"])
@@ -363,7 +374,12 @@ def start_assembly(db: Session, user: User, order_id: int, override_reason: str 
 
 
 def complete(db: Session, user: User, order_id: int, warehouse_id: int | None = None) -> SalesOrder:
-    o = get_or_404(db, SalesOrder, order_id, "订单")
+    db.flush()  # 保留同一事务前一步服务调用的合法变更，再刷新锁定状态
+    acquire_mutex(db)  # 必须在读状态/核对领料之前持有，直至库存、台账、重算一起提交
+    o = db.scalar(select(SalesOrder).where(SalesOrder.id == order_id).with_for_update()
+                  .execution_options(populate_existing=True))  # 已预读的 ORM 对象也必须刷新为锁定后的状态
+    if o is None:
+        raise BizError("订单不存在", 404)
     if o.status != OrderStatus.ASSEMBLING:
         raise BizError("订单需为“装配中”")
     # 成品入库前必须已领齐 BOM 物料（已领未退 ≥ 需求），否则账面凭空多出一台整机、料还留在库里被别的订单再领
