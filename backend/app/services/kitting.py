@@ -380,11 +380,18 @@ def order_need_date(o: SalesOrder, lead_time: dict[int, int]) -> date:
     return o.due_date - timedelta(days=lead_time.get(o.product_id, 0))
 
 
+def _doc_bom(db: Session, doc, boms: dict[int, list[tuple[int, Decimal]]]) -> list[tuple[int, Decimal]]:
+    """自制任务/外协单用建单时冻结的批准 BOM；老单据没有快照才用当前生效 BOM。"""
+    if doc.bom_snapshot:
+        return [(int(c), Decimal(p)) for c, p in json.loads(doc.bom_snapshot)]
+    return boms.get(doc.material_id, [])
+
+
 def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], today: date) -> list[ProdDemand]:
     """在制自制任务 / 本厂供料外协单：BOM 原料需求 − 已过账领料。"""
     iss_wo: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
     iss_os: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
-    rows = db.execute(select(PickList.work_order_id, PickList.outsource_id, PickLine.material_id, func.sum(PickLine.qty))
+    rows = db.execute(select(PickList.work_order_id, PickList.outsource_id, PickLine.material_id, func.sum(PickLine.qty - PickLine.returned_qty))
                       .join(PickLine, PickLine.pick_id == PickList.id)
                       .where(PickList.status == "POSTED")
                       .where((PickList.work_order_id.is_not(None)) | (PickList.outsource_id.is_not(None)))
@@ -398,14 +405,14 @@ def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], 
     for wo in db.scalars(select(WorkOrder).where(WorkOrder.status.in_(["PLANNED", "STARTED"]))).all():
         if D(wo.qty) - D(wo.done_qty) <= 0:
             continue
-        items = [(cid, max(per * D(wo.qty) - iss_wo.get((wo.id, cid), ZERO), ZERO)) for cid, per in boms.get(wo.material_id, [])]
+        items = [(cid, max(per * D(wo.qty) - iss_wo.get((wo.id, cid), ZERO), ZERO)) for cid, per in _doc_bom(db, wo, boms)]
         items = [(c, q) for c, q in items if q > 0]
         if items:
             out.append(ProdDemand("WO", wo.id, wo.wo_no, wo.material_id, items, wo.status == "STARTED",
                                   wo.planned_finish or today, wo.order_id))
     for o in db.scalars(select(OutsourceOrder).where(OutsourceOrder.status.in_(["PLANNED", "SENT", "PARTIAL"]),
                                                       OutsourceOrder.supply_mode == "CONSIGNED")).all():
-        items = [(cid, max(per * D(o.qty) - iss_os.get((o.id, cid), ZERO), ZERO)) for cid, per in boms.get(o.material_id, [])]
+        items = [(cid, max(per * D(o.qty) - iss_os.get((o.id, cid), ZERO), ZERO)) for cid, per in _doc_bom(db, o, boms)]
         items = [(c, q) for c, q in items if q > 0]
         if items:
             out.append(ProdDemand("OUTSOURCE", o.id, o.os_no, o.material_id, items, o.status != "PLANNED",
@@ -507,6 +514,7 @@ def load_snapshot(db: Session, today: date | None = None, pin_override: dict[int
 
 def recalc(db: Session, today: date | None = None, commit: bool = True) -> KitResult:
     """重算并写回：KitLine 全量替换、非锁定预占全量替换、订单冗余字段更新、生成缺料预警。"""
+    db.flush()  # 会话不自动 flush：先刷出未落库的写入，快照才是最新状态
     acquire_mutex(db)
     snap = load_snapshot(db, today)
     res = compute(snap)

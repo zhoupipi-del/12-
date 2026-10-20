@@ -35,6 +35,7 @@
           <el-form-item label="图号"><el-input v-model="f.drawing_no" :disabled="!!f.id" :placeholder="f.id ? '' : ''" /><div v-if="f.id" class="small muted">改图号请用【图纸 → 技改换图号】</div></el-form-item>
           <el-form-item label="提前期（天）"><el-input-number v-model="f.lead_time_days" :min="0" /></el-form-item>
           <el-form-item label="到货后检验/转运（天）"><el-input-number v-model="f.inbound_days" :min="0" :max="60" /></el-form-item>
+          <el-form-item label="免 BOM"><el-switch v-model="f.bom_exempt" /><span class="small muted" style="margin-left:8px">自制/外协件确无物料投入的工艺才勾选；没有 BOM 又没勾选，不能开工/领料/报工</span></el-form-item>
           <el-form-item label="免图纸管控"><el-switch v-model="f.drawing_exempt" /><span class="small muted" style="margin-left:8px">确无受控图纸的标准件才勾选；填了图号又没发布图纸会拦开工</span></el-form-item>
           <el-form-item label="标记"><el-checkbox v-model="f.is_common">通用件</el-checkbox><el-checkbox v-model="f.is_spare">售后备件</el-checkbox></el-form-item>
           <el-form-item label="生产库下限"><el-input-number v-model="f.safety_min" :min="0" /></el-form-item>
@@ -67,7 +68,7 @@ const open = ref(false)
 const f = ref({})
 function edit(row) {
   f.value = row ? { ...row, safety_min: Number(row.safety_min), safety_max: Number(row.safety_max), spare_min: Number(row.spare_min), spare_max: Number(row.spare_max) }
-    : { code: '', name: '', spec: '', unit: '件', type: 'BUY', drawing_no: '', drawing_exempt: false, inbound_days: 1, is_common: false, is_spare: false, lead_time_days: 7, safety_min: 0, safety_max: 0, spare_min: 0, spare_max: 0, default_buyer_id: null, default_supplier_id: null, is_active: true }
+    : { code: '', name: '', spec: '', unit: '件', type: 'BUY', drawing_no: '', drawing_exempt: false, bom_exempt: false, inbound_days: 1, is_common: false, is_spare: false, lead_time_days: 7, safety_min: 0, safety_max: 0, spare_min: 0, spare_max: 0, default_buyer_id: null, default_supplier_id: null, is_active: true }
   open.value = true
 }
 async function save() {

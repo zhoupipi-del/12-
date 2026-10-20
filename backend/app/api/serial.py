@@ -27,7 +27,7 @@ def user(u: User) -> dict:
 
 
 def material(m: Material) -> dict:
-    return {**pick(m, "id", "code", "name", "spec", "unit", "type", "drawing_no", "drawing_exempt", "is_common", "is_spare",
+    return {**pick(m, "id", "code", "name", "spec", "unit", "type", "drawing_no", "drawing_exempt", "bom_exempt", "is_common", "is_spare",
                    "lead_time_days", "inbound_days", "safety_min", "safety_max", "spare_min", "spare_max", "default_buyer_id",
                    "default_supplier_id", "is_active"),
             "type_label": MaterialType.LABELS.get(m.type, m.type)}

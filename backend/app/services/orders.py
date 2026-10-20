@@ -11,10 +11,12 @@ from sqlalchemy.orm import Session
 
 from ..core.errors import BizError
 from ..models import (Bom, KitStatus, Material, MaterialType, OrderIssue, OrderStatus, PickLine, PickList,
-                      Reservation, SalesOrder, ShipmentPlan, StockLot, StockTxn, TxnType, User, Warehouse,
+                      OutsourceOrder, Reservation, SalesOrder, ShipmentPlan, StockLot, StockTxn, TxnType, User, Warehouse,
                       WarehousePurpose, WorkOrder, ZERO, now)
 from .common import D, audit, get_or_404, next_no
 from .drawings import assert_confirmed, assert_not_held
+from . import protection as prot
+from .protection import reserved_by_others
 from .inventory import available, default_warehouse, fifo_out, stock_in
 
 
@@ -98,6 +100,8 @@ def cancel(db: Session, user: User, order_id: int, reason: str) -> SalesOrder:
     o.status = OrderStatus.CANCELLED
     for r in db.scalars(select(Reservation).where(Reservation.order_id == o.id)).all():
         db.delete(r)
+    for pk in db.scalars(select(PickList).where(PickList.order_id == o.id, PickList.status == "DRAFT")).all():
+        pk.status = "CANCELLED"  # 未过账的领料单随订单作废，不能事后再扣库存
     audit(db, user.id, "CANCEL", "SalesOrder", o.id, reason)
     return o
 
@@ -194,15 +198,6 @@ def create_pick(db: Session, user: User, order_id: int, lines: list[dict] | None
     return pk
 
 
-def reserved_by_others(db: Session, material_id: int, order_id: int | None) -> Decimal:
-    """其他订单对该物料的库存预占（人工锁定 + 冻结）。本订单自己的预占不算。"""
-    q = select(func.coalesce(func.sum(Reservation.qty), 0)).where(Reservation.material_id == material_id,
-                                                                  Reservation.source_type == "STOCK")
-    if order_id:
-        q = q.where(Reservation.order_id != order_id)
-    return D(db.scalar(q))
-
-
 def post_pick(db: Session, user: User, pick_id: int) -> PickList:
     # 行锁：同一张领料单被重复提交/并发过账时，后到者会看到 POSTED 而被拒绝，不会重复扣库存
     pk = db.scalar(select(PickList).where(PickList.id == pick_id).with_for_update())
@@ -210,11 +205,21 @@ def post_pick(db: Session, user: User, pick_id: int) -> PickList:
         raise BizError("领料单不存在", 404)
     if pk.status != "DRAFT":
         raise BizError("领料单已过账")
+    # 过账时重新核对来源单据：创建领料单之后订单可能已取消、任务已结束，旧草稿不能再扣库存
     if pk.order_id:
+        so = db.get(SalesOrder, pk.order_id)
+        if so is None or so.status not in (OrderStatus.RELEASED, OrderStatus.ASSEMBLING):
+            raise BizError("来源订单已不在“已下达/装配中”，该领料单不能过账（请作废）")
         assert_not_held(db, "SALES_ORDER", pk.order_id)
     elif pk.work_order_id:
+        wo = db.get(WorkOrder, pk.work_order_id)
+        if wo is None or wo.status not in ("PLANNED", "STARTED"):
+            raise BizError("来源自制任务已结束或取消，该领料单不能过账（请作废）")
         assert_not_held(db, "WORK_ORDER", pk.work_order_id)
     elif pk.outsource_id:
+        osd = db.get(OutsourceOrder, pk.outsource_id)
+        if osd is None or osd.status not in ("PLANNED", "SENT", "PARTIAL"):
+            raise BizError("来源外协单已结束或取消，该领料单不能过账（请作废）")
         assert_not_held(db, "OUTSOURCE", pk.outsource_id)
     from .kitting import acquire_mutex
     acquire_mutex(db)  # 与锁料/重算/调料串行：判断“能不能领”和“扣库存”之间，别人的预占不会变
@@ -223,10 +228,12 @@ def post_pick(db: Session, user: User, pick_id: int) -> PickList:
         if D(ln.qty) <= 0:
             continue
         # 出库口也要尊重预占：不得领走其他订单已锁定/冻结的料（要抢料请走调料申请，审批后才能腾出）
-        free = available(db, ln.material_id, pk.warehouse_id) - reserved_by_others(db, ln.material_id, pk.order_id)
+        free = min(available(db, ln.material_id, pk.warehouse_id),
+                   prot.free_to_issue(db, ln.material_id, pk.warehouse_id, order_id=pk.order_id,
+                                      wo_id=pk.work_order_id, os_id=pk.outsource_id))
         if D(ln.qty) > free:
             raise BizError(f"{ln.material.code if ln.material else ln.material_id} 可领数量不足："
-                           f"库存中有 {max(free, ZERO):g} 未被其他订单锁定/冻结，本次要领 {D(ln.qty):g}。"
+                           f"库存中有 {max(free, ZERO):g} 未被其他订单锁定/冻结或被任务占用，本次要领 {D(ln.qty):g}。"
                            "如需使用其他订单已占用的料，请走【调料申请】", data={"free": float(max(free, ZERO))})
         used = fifo_out(db, material_id=ln.material_id, warehouse_id=pk.warehouse_id, qty=ln.qty,
                         txn_type=TxnType.PICK_OUT, ref_type="PICK", ref_id=pk.id, order_id=pk.order_id,
@@ -257,6 +264,34 @@ def post_pick(db: Session, user: User, pick_id: int) -> PickList:
     return pk
 
 
+def _consumed_qty(db: Session, pk: PickList, material_id: int) -> Decimal:
+    """该领料单来源已经【用掉】的该物料数量（不能再退）：
+    订单 → 完工后按 BOM 需求量；自制任务 → BOM 用量 × 已报工量；外协单 → 发出后按 BOM 用量 × 外协数量。"""
+    if pk.order_id:
+        o = db.get(SalesOrder, pk.order_id)
+        if o and o.status in (OrderStatus.COMPLETED, OrderStatus.SHIPPED):
+            return next((p["required"] for p in pick_plan(db, o) if p["material_id"] == material_id), ZERO)
+    elif pk.work_order_id:
+        w = db.get(WorkOrder, pk.work_order_id)
+        if w:
+            per = next((q for c, q in prot.bom_lines(db, w) if c == material_id), ZERO)
+            return per * D(w.done_qty)
+    elif pk.outsource_id:
+        x = db.get(OutsourceOrder, pk.outsource_id)
+        if x and x.status != "PLANNED":
+            per = next((q for c, q in prot.bom_lines(db, x) if c == material_id), ZERO)
+            return per * D(x.qty)
+    return ZERO
+
+
+def _issued_of(db: Session, pk: PickList, material_id: int) -> Decimal:
+    if pk.order_id:
+        return D(db.scalar(select(OrderIssue.qty).where(OrderIssue.order_id == pk.order_id,
+                                                        OrderIssue.material_id == material_id)))
+    col, ref = (PickList.work_order_id, pk.work_order_id) if pk.work_order_id else (PickList.outsource_id, pk.outsource_id)
+    return prot.issued_net(db, col, ref, material_id)
+
+
 def return_pick(db: Session, user: User, pick_id: int, lines: list[dict], reason: str) -> PickList:
     """退料：已过账领料单的部分/全部退回生产库（新批次入库），订单已领量同步减少。原领料记录保留。"""
     if not reason:
@@ -272,6 +307,11 @@ def return_pick(db: Session, user: User, pick_id: int, lines: list[dict], reason
             raise BizError("退料物料不在该领料单内")
         if q <= 0 or q > D(ln.qty) - D(ln.returned_qty):
             raise BizError(f"退料数量无效：可退 {D(ln.qty) - D(ln.returned_qty):g}")
+        # 已经用于完工/报工/发外协的部分不能退：可退 = 已领未退 − 已消耗。完工后的整体撤销要走有权限的冲回流程，不能靠退料
+        spare = max(_issued_of(db, pk, ln.material_id) - _consumed_qty(db, pk, ln.material_id), ZERO)
+        if q > spare:
+            raise BizError(f"该物料已有 {_consumed_qty(db, pk, ln.material_id):g} 用于完工/加工，只能退尾料 {spare:g}"
+                           "；如需撤销已完成的产出，请走完工冲回/返工流程")
         # 退回原批次（可追溯，也让“来料批次是否被领用”的判断随退料恢复）
         lots = json.loads(ln.lots or "[]")
         left = q
@@ -328,6 +368,7 @@ def complete(db: Session, user: User, order_id: int, warehouse_id: int | None = 
         raise BizError("订单需为“装配中”")
     # 成品入库前必须已领齐 BOM 物料（已领未退 ≥ 需求），否则账面凭空多出一台整机、料还留在库里被别的订单再领
     db.flush()
+    assert_not_held(db, "SALES_ORDER", o.id)  # 图纸重大变更暂停期间，成品不能转为可用库存
     short = [f"{p['code']} 需 {p['required']:g}、已领 {p['issued']:g}" for p in pick_plan(db, o) if p["plan_qty"] > 0]
     if short:
         raise BizError("BOM 物料未领齐，不能完工入库（请先领料并过账）：" + "；".join(short[:8]), data={"short": short})
@@ -386,8 +427,9 @@ def shipment_action(db: Session, user: User, ship_id: int, action: str, comment:
         s.approved_by, s.approved_at, s.approve_comment = user.id, now(), comment
     if action == "ship":
         o = s.order
-        if o.status != OrderStatus.COMPLETED:
+        if o.status not in (OrderStatus.COMPLETED, OrderStatus.SHIPPED):
             raise BizError("订单尚未完工入库，不能发货出库")
+        assert_not_held(db, "SALES_ORDER", o.id)  # 图纸重大变更暂停未裁定前不得发货
         wh = default_warehouse(db, WarehousePurpose.FINISHED)
         fifo_out(db, material_id=o.product_id, warehouse_id=wh.id, qty=s.qty, txn_type=TxnType.SHIP_OUT,
                  ref_type="SHIPMENT", ref_id=s.id, order_id=o.id, customer=o.customer, user_id=user.id)

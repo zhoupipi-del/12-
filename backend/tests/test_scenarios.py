@@ -484,7 +484,7 @@ def test_7_partial_work_issue_return_and_shipment_quantities_close():
 
     # 自制任务部分完工：3 + 2 = 5，超报被拒，入库量闭合
     with SessionLocal() as db:
-        S = make_material(db, f"S7S-{t}", "MAKE")
+        S = make_material(db, f"S7S-{t}", "MAKE", bom_exempt=True)
         wo = psvc.create_wo(db, u(db, "jihua"), {"material_id": S.id, "qty": 5})
         psvc.start_wo(db, u(db, "chejian"), wo.id)
         psvc.report_wo(db, u(db, "chejian"), wo.id, Dc(3))

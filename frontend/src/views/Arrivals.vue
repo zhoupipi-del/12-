@@ -38,7 +38,7 @@
         <el-form-item label="送货单数量"><el-input-number v-model="af.expected_qty" :min="0" placeholder="与实到不符时填写" /><span class="muted small" style="margin-left: 8px">少于送货单数量会自动生成数量异常</span></el-form-item>
         <el-form-item label="备注"><el-input v-model="af.note" /></el-form-item>
       </el-form>
-      <template #footer><el-button type="primary" :disabled="!sel" @click="saveArr">登记</el-button></template>
+      <template #footer><el-button type="primary" :disabled="!sel" :loading="saving" @click="saveArr">登记</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="inspOpen" :title="`检验 ${cur?.arrival_no}`" width="500px">
@@ -48,8 +48,10 @@
         <el-form-item label="不合格"><el-input-number v-model="inf.rejected" :min="0" :max="Number(cur?.qty)" @change="(v) => (inf.qualified = Number(cur.qty) - v)" /></el-form-item>
         <el-form-item v-if="inf.rejected > 0" label="不合格原因" required>
           <el-input v-model="inf.reject_reason" type="textarea" :rows="2" placeholder="例如：表面锈蚀、尺寸超差" />
-          <el-button v-if="aiOn" link size="small" @click="classify">让 AI 判断责任方</el-button>
-          <div v-if="cls" class="small muted">建议：{{ cls.category === 'QTY' ? '数量异常' : '质量异常' }}，责任方 {{ RESP[cls.responsibility] }}，处置 {{ QUALITY_DISP[cls.disposition] || QTY_DISP[cls.disposition] }}（{{ cls.reason }}）</div>
+          <el-button v-if="aiOn" link size="small" @click="classify">AI 辅助提示（仅供参考）</el-button>
+          <div v-if="cls" class="small muted">
+            可能原因：{{ (cls.possible_causes || []).join('；') || '—' }}；待核实：{{ (cls.evidence_to_verify || []).join('、') || '—' }}。{{ cls.disclaimer }}
+          </div>
         </el-form-item>
         <el-form-item label="入库仓库"><RefSelect v-model="inf.warehouse_id" kind="warehouse" placeholder="默认生产物料库" /></el-form-item>
         <el-form-item label="批次号"><el-input v-model="inf.lot_no" placeholder="默认用到货单号" /></el-form-item>
@@ -80,12 +82,20 @@ const srcs = ref([])
 const sel = ref(null)
 const af = ref({})
 async function loadSrc() { srcs.value = await get('/arrival-sources', { keyword: kw.value }) }
-function openArr() { sel.value = null; af.value = { qty: 1, expected_qty: undefined, note: '' }; loadSrc(); arrOpen.value = true }
+// 幂等键：每次打开登记框生成一次；双击、超时重试沿用同一个键，后端只登记一次。登记成功后下次打开再换新键
+const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const arrKey = ref('')
+const saving = ref(false)
+function openArr() { sel.value = null; af.value = { qty: 1, expected_qty: undefined, note: '' }; arrKey.value = newKey(); loadSrc(); arrOpen.value = true }
 async function saveArr() {
-  const r = await post('/arrivals', { source_type: sel.value.source_type, source_id: sel.value.source_id, ...af.value })
-  arrOpen.value = false
-  ElMessage.success(r.exception_no ? `已登记，数量短少已生成异常单 ${r.exception_no}` : '已登记，等待检验')
-  load()
+  if (saving.value) return
+  saving.value = true
+  try {
+    const r = await post('/arrivals', { source_type: sel.value.source_type, source_id: sel.value.source_id, ...af.value, client_token: arrKey.value })
+    arrOpen.value = false
+    ElMessage.success(r.exception_no ? `已登记，数量短少已生成异常单 ${r.exception_no}` : '已登记，等待检验')
+    load()
+  } finally { saving.value = false }
 }
 const inspOpen = ref(false)
 const cur = ref(null)

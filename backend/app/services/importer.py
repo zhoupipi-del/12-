@@ -102,7 +102,7 @@ def run(db: Session, user: User, kind: str, content: bytes, dry_run: bool = True
         db.rollback()
     else:
         audit(db, user.id, "IMPORT", kind, None, stats)
-        db.commit()
+        db.flush()  # 不在这里提交：调用方把导入、审计和齐套重算放进同一个事务一次提交
     return {**stats, "errors": errors[:200], "error_count": len(errors), "committed": not errors and not dry_run}
 
 

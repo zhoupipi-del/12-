@@ -404,7 +404,14 @@ def import_run(kind: str, dry_run: bool = True, file: UploadFile = File(...), db
         raise BizError("期初库存只能由仓库或管理员导入", 403)
     r = importer.run(db, u, kind, file.file.read(), dry_run)
     if r["committed"]:
-        kitting.recalc(db)
+        # 导入 + 审计 + 齐套重算同一个事务：重算失败整批导入回滚，修好后重新导入不会重复入库
+        try:
+            db.flush()
+            kitting.recalc(db, commit=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
     return r
 
 

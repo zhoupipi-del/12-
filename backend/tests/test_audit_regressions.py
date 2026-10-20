@@ -244,6 +244,6 @@ def test_12_drawing_no_without_controlled_drawing_blocks_start(api):
     assert req and req[0].get("missing")
     api.post(f"/work-orders/{w['id']}/start", status=400)
     # 确无图纸的标准件：明确勾选免管控后才放行
-    ex = api.material("REG-DWG-EX", "MAKE", drawing="STD-" + tag(), drawing_exempt=True)
+    ex = api.material("REG-DWG-EX", "MAKE", drawing="STD-" + tag(), drawing_exempt=True, bom_exempt=True)
     w2 = api.post("/work-orders", {"material_id": ex, "qty": 1})
     assert api.post(f"/work-orders/{w2['id']}/start")["status"] == "STARTED"

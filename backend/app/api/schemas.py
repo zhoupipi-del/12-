@@ -35,6 +35,7 @@ class MaterialIn(BaseModel):
     type: str
     drawing_no: str = ""
     drawing_exempt: bool = False
+    bom_exempt: bool = False
     is_common: bool = False
     is_spare: bool = False
     lead_time_days: int = 7

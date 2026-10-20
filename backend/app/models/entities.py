@@ -125,6 +125,7 @@ class Material(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String(12))  # MaterialType
     drawing_no: Mapped[str] = mapped_column(String(80), default="", index=True)
     drawing_exempt: Mapped[bool] = mapped_column(Boolean, default=False)  # 免图纸管控（确无受控图纸的标准件）
+    bom_exempt: Mapped[bool] = mapped_column(Boolean, default=False)  # 免 BOM：工艺确无物料投入（需技术明确勾选，缺资料不等于免投料）
     is_common: Mapped[bool] = mapped_column(Boolean, default=False)  # 通用件（多机型共用，参与冲填抢料）
     is_spare: Mapped[bool] = mapped_column(Boolean, default=False)   # 同时作为售后备件
     lead_time_days: Mapped[int] = mapped_column(Integer, default=7)
@@ -462,6 +463,7 @@ class WorkOrder(Base, TimestampMixin):
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("so_order.id"))
     owner: Mapped[str] = mapped_column(String(50), default="")
     remark: Mapped[str] = mapped_column(Text, default="")
+    bom_snapshot: Mapped[Optional[str]] = mapped_column(Text)  # 建单时冻结的批准 BOM（JSON [[子件, 含损耗用量]]）：领料/报工/需求都读它
     material: Mapped[Material] = relationship()
 
 
@@ -484,6 +486,7 @@ class OutsourceOrder(Base, TimestampMixin):
     supply_mode: Mapped[str] = mapped_column(String(10), default="TURNKEY")
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("so_order.id"))
     remark: Mapped[str] = mapped_column(Text, default="")
+    bom_snapshot: Mapped[Optional[str]] = mapped_column(Text)  # 同自制任务：建单时冻结的批准 BOM
     supplier: Mapped[Supplier] = relationship()
     material: Mapped[Material] = relationship()
 
