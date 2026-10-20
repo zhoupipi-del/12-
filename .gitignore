@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+backend/prodsync.db
+backend/uploads/
+frontend/node_modules/
+.pytest_cache/
+.ruff_cache/
+
+# Local environments, credentials and generated runtime data
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.log
+*.pem
+*.key
+.DS_Store
+Thumbs.db

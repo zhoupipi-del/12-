@@ -1,0 +1,37 @@
+# 一键部署（正式环境）：先 export 下面几个必填变量，再 docker compose up -d
+#   MYSQL_ROOT_PASSWORD  MYSQL_PASSWORD  SECRET_KEY(openssl rand -hex 32)  CORS_ORIGINS(访问域名，如 https://mes.example.com)
+# 缺任何一个都会直接报错，不会带着默认密码启动。首次启动后创建管理员：
+#   docker compose exec app python -m app.cli create-admin --username 你的账号
+services:
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: prodsync
+      MYSQL_USER: prodsync
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes: [ "dbdata:/var/lib/mysql" ]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      retries: 10
+  app:
+    build: .
+    restart: always
+    depends_on: { db: { condition: service_healthy } }
+    ports: [ "8000:8000" ]
+    environment:
+      DATABASE_URL: mysql+pymysql://prodsync:${MYSQL_PASSWORD:?请设置 MYSQL_PASSWORD}@db:3306/prodsync?charset=utf8mb4
+      SECRET_KEY: ${SECRET_KEY:?请设置 SECRET_KEY（openssl rand -hex 32）}
+      APP_ENV: production
+      CORS_ORIGINS: ${CORS_ORIGINS:?请设置 CORS_ORIGINS（实际访问域名）}
+      AUTO_CREATE_TABLES: "0"
+      UPLOAD_DIR: /data/uploads
+      AI_ENABLED: "0"
+    volumes: [ "uploads:/data/uploads" ]
+volumes:
+  dbdata:
+  uploads:

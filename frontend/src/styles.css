@@ -1,0 +1,84 @@
+/* 设计令牌 —— 钢灰工业底 + 铁青主色 + 三个语义信号色（齐 / 在途 / 缺）。
+   铜色只用于品牌标识。数字一律用 Barlow（类 DIN 工业字体），离线打包。 */
+:root {
+  --ink: #1e2a33;
+  --ink-2: #4a5864;
+  --ink-3: #7b8893;
+  --bg: #eceff1;
+  --panel: #ffffff;
+  --line: #d6dce1;
+  --line-soft: #e6eaed;
+  --primary: #2c5674;
+  --primary-soft: #e3ecf2;
+  --copper: #a8642a;
+  --ok: #2f7d4f;
+  --wait: #b8860b;
+  --late: #c4572a;
+  --short: #b83227;
+  --num: 'Barlow', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --num-c: 'Barlow Condensed', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --ui: -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+
+  --el-color-primary: #2c5674;
+  --el-color-primary-light-3: #6a8ba2;
+  --el-color-primary-light-5: #95adbe;
+  --el-color-primary-light-7: #c0cfd9;
+  --el-color-primary-light-8: #d5dfe6;
+  --el-color-primary-light-9: #eaf0f4;
+  --el-color-primary-dark-2: #23455d;
+  --el-color-success: #2f7d4f;
+  --el-color-warning: #b8860b;
+  --el-color-danger: #b83227;
+  --el-border-radius-base: 3px;
+  --el-font-family: var(--ui);
+  --el-text-color-primary: #1e2a33;
+  --el-text-color-regular: #33414c;
+  --el-border-color: #d0d7dd;
+  --el-border-color-lighter: #e3e8ec;
+  --el-fill-color-light: #f3f5f7;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body { font-family: var(--ui); color: var(--ink); background: var(--bg); font-size: 14px; -webkit-font-smoothing: antialiased; }
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+.num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+.no { font-family: var(--num); font-weight: 600; letter-spacing: .02em; }
+.muted { color: var(--ink-3); }
+.small { font-size: 12px; }
+.ok { color: var(--ok); } .wait { color: var(--wait); } .late { color: var(--late); } .short { color: var(--short); }
+
+/* 页面骨架 */
+.page { padding: 20px 24px 40px; max-width: 1600px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.page-head h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: .02em; }
+.page-head p { margin: 4px 0 0; color: var(--ink-3); font-size: 13px; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 16px; }
+.panel + .panel { margin-top: 16px; }
+.panel h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.panel h2 small { font-weight: 400; color: var(--ink-3); margin-left: 8px; font-size: 12px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1100px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 24px; }
+.kv > div { display: flex; flex-direction: column; gap: 2px; }
+.kv span { color: var(--ink-3); font-size: 12px; }
+.kv b { font-weight: 500; }
+
+/* 状态点 */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.dot.GREEN, .dot.READY { background: var(--ok); }
+.dot.YELLOW, .dot.INCOMING_OK { background: var(--wait); }
+.dot.INCOMING_LATE { background: var(--late); }
+.dot.RED, .dot.SHORT { background: var(--short); }
+
+.el-table { --el-table-header-bg-color: #f4f6f8; --el-table-header-text-color: #4a5864; font-size: 13px; }
+.el-table th.el-table__cell { font-weight: 500; }
+.el-tag { font-family: var(--ui); }
+.el-drawer__header { margin-bottom: 8px; }
+.locked-row { background: #fbf7ee !important; }

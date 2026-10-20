@@ -1,0 +1,15 @@
+# 运行基线：Python 3.12（已在 3.12 上完整安装并跑通全部测试）。
+# 3.10 已于 2026-10 结束安全支持，不再作为新部署的基线。
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27
+SQLAlchemy>=2.0,<2.2
+alembic>=1.13
+pydantic>=2.5,<3
+python-jose[cryptography]>=3.3
+bcrypt>=4.1
+python-multipart>=0.0.9
+httpx>=0.26
+openpyxl>=3.1            # Excel 导入
+# MySQL 驱动（使用 MySQL 时）；cryptography 用于 MySQL 8 默认的 caching_sha2_password 认证
+pymysql>=1.1
+cryptography>=42
