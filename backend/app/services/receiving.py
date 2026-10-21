@@ -68,7 +68,9 @@ def register_arrival(db: Session, user: User, source_type: str, source_id: int, 
     if client_token:
         dup = db.scalar(select(Arrival).where(Arrival.client_token == client_token).with_for_update())
         if dup:
-            if (dup.source_type, dup.source_line_id, D(dup.qty)) != (source_type, src.id, D(qty)):
+            exp_new = D(expected_qty) if expected_qty is not None else D(qty)
+            if (dup.source_type, dup.source_line_id, D(dup.qty), D(dup.expected_qty)) != \
+                    (source_type, src.id, D(qty), exp_new):
                 raise BizError("同一幂等键对应的请求内容不同，请换新的键", 409)
             return dup, None
     qty = D(qty)

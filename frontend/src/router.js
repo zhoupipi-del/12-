@@ -6,6 +6,7 @@ export const NAV = [
   { group: '计划与齐套', items: [
     { path: '/', name: 'Dashboard', title: '工作台', icon: 'Odometer' },
     { path: '/kitting', name: 'Kitting', title: '齐套中心', icon: 'Grid' },
+    { path: '/material-plan', name: 'MaterialPlan', title: '订单备料', icon: 'List' },
     { path: '/orders', name: 'Orders', title: '销售订单', icon: 'Tickets' },
     { path: '/realloc', name: 'Realloc', title: '调料申请', icon: 'Switch' },
     { path: '/alerts', name: 'Alerts', title: '预警中心', icon: 'Bell' },

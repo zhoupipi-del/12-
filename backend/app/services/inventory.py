@@ -74,6 +74,16 @@ def transfer(db: Session, *, material_id: int, from_wh: int, to_wh: int, qty: De
     """调拨（例如生产库 ↔ 售后备件库），保留原批次号与入库时间以维持先进先出。"""
     if from_wh == to_wh:
         raise BizError("调出和调入仓库不能相同")
+    src_wh = db.get(Warehouse, from_wh)
+    if src_wh is not None and src_wh.purpose == WarehousePurpose.PRODUCTION:
+        # 从生产库转走的料，不能是别的订单已锁定/冻结、或在制任务认领的：与领料用同一套保护
+        from . import protection
+        from .kitting import acquire_mutex
+        acquire_mutex(db)
+        free = protection.free_to_issue(db, material_id, from_wh)
+        if D(qty) > free:
+            raise BizError(f"可调拨数量不足：生产库中有 {free:g} 未被订单锁定/冻结或被任务占用，本次要调 {D(qty):g}。"
+                           "占用中的料请先走【调料申请】或释放占用", data={"free": float(free)})
     used = fifo_out(db, material_id=material_id, warehouse_id=from_wh, qty=qty, txn_type=TxnType.TRANSFER_OUT,
                     ref_type="TRANSFER", user_id=user_id, remark=remark)
     ts = now()

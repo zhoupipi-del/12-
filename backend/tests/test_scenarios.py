@@ -374,7 +374,8 @@ def test_5_semi_finished_and_work_order_do_not_double_count_raw():
         # 还没有加工任务：半成品由原料展开满足，占用 10 个原料
         assert reserved(db, o1.id, RAW.id) == 10
         # 建加工任务 5 个 S（计划 3 天后完工）
-        wo = psvc.create_wo(db, u(db, "jihua"), {"material_id": S.id, "qty": 5, "planned_finish": TODAY + timedelta(days=3)})
+        wo = psvc.create_wo(db, u(db, "jihua"), {"material_id": S.id, "qty": 5, "source_mode": "STOCK",
+                                                         "planned_finish": TODAY + timedelta(days=3)})
         db.commit()
         kitting.recalc(db)
         # 订单改由加工任务供应，不再展开原料；原料只被加工任务“认领”一次（10），不是 20
@@ -404,9 +405,9 @@ def test_5_semi_finished_and_work_order_do_not_double_count_raw():
         db.add(sup)
         db.flush()
         cons = psvc.create_outsource(db, u(db, "caigou"), {"supplier_id": sup.id, "material_id": OUT.id, "qty": 2,
-                                                          "supply_mode": "CONSIGNED"})
+                                                          "source_mode": "STOCK", "supply_mode": "CONSIGNED"})
         turn = psvc.create_outsource(db, u(db, "caigou"), {"supplier_id": sup.id, "material_id": OUT.id, "qty": 2,
-                                                          "supply_mode": "TURNKEY"})
+                                                          "source_mode": "STOCK", "supply_mode": "TURNKEY"})
         db.commit()
         snap = kitting.load_snapshot(db)
         kinds = {(d.kind, d.id): dict(d.items) for d in snap.prod_demands}
@@ -484,8 +485,8 @@ def test_7_partial_work_issue_return_and_shipment_quantities_close():
 
     # 自制任务部分完工：3 + 2 = 5，超报被拒，入库量闭合
     with SessionLocal() as db:
-        S = make_material(db, f"S7S-{t}", "MAKE")
-        wo = psvc.create_wo(db, u(db, "jihua"), {"material_id": S.id, "qty": 5})
+        S = make_material(db, f"S7S-{t}", "MAKE", bom_exempt=True)
+        wo = psvc.create_wo(db, u(db, "jihua"), {"material_id": S.id, "qty": 5, "source_mode": "STOCK"})
         psvc.start_wo(db, u(db, "chejian"), wo.id)
         psvc.report_wo(db, u(db, "chejian"), wo.id, Dc(3))
         db.commit()

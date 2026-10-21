@@ -273,7 +273,15 @@ def edit_line(db: Session, user: User, line_id: int, data: dict, reason: str = "
 
 
 def _lot_inflow(db: Session, lot_id: int) -> Decimal:
-    return D(db.scalar(select(func.coalesce(func.sum(StockTxn.qty), 0)).where(StockTxn.lot_id == lot_id, StockTxn.qty > 0)))
+    """批次的来源入库量：不含退料（退料是把已领出的料放回，不是新入库）。"""
+    return D(db.scalar(select(func.coalesce(func.sum(StockTxn.qty), 0)).where(
+        StockTxn.lot_id == lot_id, StockTxn.qty > 0, StockTxn.txn_type != TxnType.PICK_RETURN)))
+
+
+def _lot_net_consumed(db: Session, lot_id: int, remain: Decimal) -> Decimal:
+    """批次净消耗 = 来源入库 − 现存 − 已被退回的部分的修正：领出再全额退回的料不算消耗。
+    用 来源入库 − 现存 直接得到；退料已把数量加回 lot.qty，所以不会再被误判。"""
+    return max(_lot_inflow(db, lot_id) - D(remain), ZERO)
 
 
 def _derived_lots(db: Session, arrivals: list, lock: bool = False) -> list[tuple]:
@@ -312,7 +320,7 @@ def line_impact(db: Session, line_id: int) -> dict:
     # 异常处置派生的批次（让步接收、复检合格）同属该采购行，冲销必须一并处理，已被领用的同样阻断
     derived = _derived_lots(db, arrivals)
     for lot, e in derived:
-        consumed = _lot_inflow(db, lot.id) - D(lot.qty)
+        consumed = _lot_net_consumed(db, lot.id, lot.qty)
         items.append({"type": "异常处置入库批次", "no": lot.lot_no, "qty": _lot_inflow(db, lot.id), "remain": lot.qty})
         if consumed > 0:
             blockers.append(f"异常单 {e.exc_no} 派生的批次 {lot.lot_no} 已被领用/出库 {consumed:g}，需先退料")

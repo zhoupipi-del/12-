@@ -7,6 +7,7 @@
       </div>
       <div class="toolbar">
         <StatusTag :map="ORDER_STATUS" :value="o.status" />
+        <el-button @click="$router.push(`/material-plan?order_id=${o.id}`)">订单备料</el-button>
         <el-button v-if="o.status === 'PLANNED' && auth.can('PLANNER')" type="primary" @click="act('release')">计划下达</el-button>
         <el-button v-if="o.status === 'RELEASED'" type="primary" @click="start()">开工装配</el-button>
         <el-button v-if="['RELEASED', 'ASSEMBLING'].includes(o.status) && auth.can('WAREHOUSE', 'WORKSHOP')" @click="newPick">按 BOM 领料</el-button>

@@ -11,6 +11,7 @@
       <el-table :data="list">
         <el-table-column label="任务" width="140"><template #default="{ row }"><span class="no">{{ row.wo_no }}</span></template></el-table-column>
         <el-table-column label="自制件" min-width="180"><template #default="{ row }"><span class="no">{{ row.code }}</span> {{ row.name }}<div class="no small muted">{{ row.drawing_no }}</div></template></el-table-column>
+        <el-table-column prop="order_no" label="任务来源" width="145"><template #default="{ row }"><span v-if="row.source_mode === 'STOCK'">备库生产</span><span v-else class="no">{{ row.order_no }}</span></template></el-table-column>
         <el-table-column label="完工 / 计划" width="110" align="right"><template #default="{ row }"><span class="num">{{ num(row.done_qty) }} / {{ num(row.qty) }}</span></template></el-table-column>
         <el-table-column label="计划开工" width="104"><template #default="{ row }"><span class="num">{{ day(row.planned_start) }}</span></template></el-table-column>
         <el-table-column label="计划完工" width="150">
@@ -34,6 +35,9 @@
 
     <el-dialog v-model="open" title="新建自制任务" width="460px">
       <el-form label-width="80px">
+        <el-form-item label="任务来源" required><el-radio-group v-model="f.source_mode" @change="sourceChanged"><el-radio value="ORDER">整机订单</el-radio><el-radio value="STOCK">备库生产</el-radio></el-radio-group></el-form-item>
+        <el-form-item v-if="f.source_mode === 'ORDER'" label="整机订单" required><el-select v-model="f.order_id" filterable style="width:100%"><el-option v-for="o in orderOpts" :key="o.id" :value="o.id" :label="o.label" /></el-select></el-form-item>
+        <el-alert v-else type="info" :closable="false" title="备库生产不占用某张整机订单，仍会参与原料占用保护。" style="margin-bottom:12px" />
         <el-form-item label="自制件"><MaterialSelect v-model="f.material_id" type="MAKE" /></el-form-item>
         <el-form-item label="数量"><el-input-number v-model="f.qty" :min="1" /></el-form-item>
         <el-form-item label="计划开工"><el-date-picker v-model="f.planned_start" value-format="YYYY-MM-DD" /></el-form-item>
@@ -56,6 +60,7 @@
 
 <script setup>
 import { onActivated, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put } from '../api'
 import { useAuth } from '../store'
@@ -65,12 +70,15 @@ import { WO_STATUS, day, num, today } from '../utils'
 
 defineOptions({ name: 'WorkOrders' })
 const auth = useAuth()
+const route = useRoute()
 const status = ref('PLANNED,STARTED')
 const list = ref([])
 async function load() { list.value = (await get('/work-orders', { status: status.value })).items }
 const open = ref(false)
 const f = ref({})
-function openNew() { f.value = { material_id: null, qty: 1, planned_start: today(), planned_finish: today(5), owner: '' }; open.value = true }
+const orderOpts = ref([])
+function openNew(prefill = {}) { f.value = { source_mode: 'ORDER', order_id: null, material_id: null, qty: 1, planned_start: today(), planned_finish: today(5), owner: '', ...prefill }; open.value = true }
+function sourceChanged(v) { if (v === 'STOCK') f.value.order_id = null }
 async function save() { await post('/work-orders', f.value); open.value = false; load() }
 async function upd(row, d) { await put(`/work-orders/${row.id}`, d); load() }
 const dwgOpen = ref(false)
@@ -100,6 +108,10 @@ async function report(row) {
   load()
 }
 async function cancel(row) { await post(`/work-orders/${row.id}/cancel`); load() }
-onMounted(load)
+onMounted(async () => {
+  orderOpts.value = await get('/orders/options')
+  await load()
+  if (route.query.order_id) openNew({ order_id: Number(route.query.order_id), material_id: Number(route.query.material_id), qty: Number(route.query.qty || 1) })
+})
 onActivated(load)
 </script>

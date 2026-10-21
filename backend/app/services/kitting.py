@@ -89,6 +89,8 @@ class ProdDemand:
     started: bool
     planned: date
     order_id: int | None = None
+    # 关联整机订单的冲填顺序。让急单优先级贯通到自制/本厂供料外协的原料竞争。
+    order_sort: tuple = field(default_factory=tuple)
 
 
 @dataclass
@@ -142,6 +144,7 @@ class KitResult:
     orders: dict[int, OrderOut]
     reservations: list[dict]  # 新的非锁定预占
     shortages: dict[int, dict]  # 物料 → {qty, need_date, orders:[...]}
+    production_stock: dict[tuple[str, int, int], Decimal] = field(default_factory=dict)  # 实际分配的现存量，不能用全部需求代替
 
 
 # ------------------------------------------------------------------ 纯计算（无数据库，便于单测）
@@ -169,6 +172,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
     reservations: list[dict] = []
     shortages: dict[int, dict] = {}
     results: dict[int, OrderOut] = {}
+    production_stock: dict[tuple[str, int, int], Decimal] = defaultdict(lambda: ZERO)
 
     # (A) 人工锁定预占：专属订单，最先扣出
     locked_pool: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
@@ -191,6 +195,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
             t = min(max(pool.get(mid, ZERO), ZERO), remain)
             if t > 0:
                 pool[mid] = pool.get(mid, ZERO) - t
+                production_stock[(d.kind, d.id, mid)] += t
                 remain -= t
             for s in incoming.get(mid, []):
                 if remain <= 0:
@@ -209,7 +214,13 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
                 s.date = FAR_FUTURE if short else max(s.date, ready)
                 s.confirmed = s.confirmed and not short
 
-    ordered = sorted(snap.prod_demands, key=lambda d: (not d.started, d.planned, d.id))
+    ordered = sorted(snap.prod_demands, key=lambda d: (
+        not d.started,
+        d.order_sort or (1, 9999, 9, d.planned, d.label),
+        d.planned,
+        d.kind,
+        d.id,
+    ))
     for d in ordered:
         if d.started:
             claim_prod(d)
@@ -341,7 +352,7 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
                 frozen_pool[(oid, mid)] = ZERO
         results[order.id] = _summarize(order, lines, snap)
 
-    return KitResult(results, reservations, shortages), dict(frozen_used)
+    return KitResult(results, reservations, shortages, dict(production_stock)), dict(frozen_used)
 
 
 def _summarize(order: OrderIn, lines: list[LineOut], snap: Snapshot) -> OrderOut:
@@ -380,11 +391,19 @@ def order_need_date(o: SalesOrder, lead_time: dict[int, int]) -> date:
     return o.due_date - timedelta(days=lead_time.get(o.product_id, 0))
 
 
-def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], today: date) -> list[ProdDemand]:
+def _doc_bom(db: Session, doc, boms: dict[int, list[tuple[int, Decimal]]]) -> list[tuple[int, Decimal]]:
+    """自制任务/外协单用建单时冻结的批准 BOM；老单据没有快照才用当前生效 BOM。"""
+    if doc.bom_snapshot:
+        return [(int(c), Decimal(p)) for c, p in json.loads(doc.bom_snapshot)]
+    return boms.get(doc.material_id, [])
+
+
+def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], today: date,
+                       order_keys: dict[int, tuple]) -> list[ProdDemand]:
     """在制自制任务 / 本厂供料外协单：BOM 原料需求 − 已过账领料。"""
     iss_wo: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
     iss_os: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
-    rows = db.execute(select(PickList.work_order_id, PickList.outsource_id, PickLine.material_id, func.sum(PickLine.qty))
+    rows = db.execute(select(PickList.work_order_id, PickList.outsource_id, PickLine.material_id, func.sum(PickLine.qty - PickLine.returned_qty))
                       .join(PickLine, PickLine.pick_id == PickList.id)
                       .where(PickList.status == "POSTED")
                       .where((PickList.work_order_id.is_not(None)) | (PickList.outsource_id.is_not(None)))
@@ -398,18 +417,18 @@ def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], 
     for wo in db.scalars(select(WorkOrder).where(WorkOrder.status.in_(["PLANNED", "STARTED"]))).all():
         if D(wo.qty) - D(wo.done_qty) <= 0:
             continue
-        items = [(cid, max(per * D(wo.qty) - iss_wo.get((wo.id, cid), ZERO), ZERO)) for cid, per in boms.get(wo.material_id, [])]
+        items = [(cid, max(per * D(wo.qty) - iss_wo.get((wo.id, cid), ZERO), ZERO)) for cid, per in _doc_bom(db, wo, boms)]
         items = [(c, q) for c, q in items if q > 0]
         if items:
             out.append(ProdDemand("WO", wo.id, wo.wo_no, wo.material_id, items, wo.status == "STARTED",
-                                  wo.planned_finish or today, wo.order_id))
+                                  wo.planned_finish or today, wo.order_id, order_keys.get(wo.order_id, ())))
     for o in db.scalars(select(OutsourceOrder).where(OutsourceOrder.status.in_(["PLANNED", "SENT", "PARTIAL"]),
                                                       OutsourceOrder.supply_mode == "CONSIGNED")).all():
-        items = [(cid, max(per * D(o.qty) - iss_os.get((o.id, cid), ZERO), ZERO)) for cid, per in boms.get(o.material_id, [])]
+        items = [(cid, max(per * D(o.qty) - iss_os.get((o.id, cid), ZERO), ZERO)) for cid, per in _doc_bom(db, o, boms)]
         items = [(c, q) for c, q in items if q > 0]
         if items:
             out.append(ProdDemand("OUTSOURCE", o.id, o.os_no, o.material_id, items, o.status != "PLANNED",
-                                  o.expected_return or today, o.order_id))
+                                  o.expected_return or today, o.order_id, order_keys.get(o.order_id, ())))
     return out
 
 
@@ -498,7 +517,7 @@ def load_snapshot(db: Session, today: date | None = None, pin_override: dict[int
               for r in db.scalars(select(Reservation).where(Reservation.locked.is_(False),
                                                             Reservation.source_type == "STOCK")).all()
               if r.order_id in active_ids]
-    prod = _load_prod_demands(db, boms, today)
+    prod = _load_prod_demands(db, boms, today, {o.id: o.sort_key for o in orders})
     return Snapshot(today, settings.kit_buffer_days, orders, boms, lead, dict(on_hand), dict(incoming), issued, locked, frozen, prod)
 
 
@@ -507,6 +526,7 @@ def load_snapshot(db: Session, today: date | None = None, pin_override: dict[int
 
 def recalc(db: Session, today: date | None = None, commit: bool = True) -> KitResult:
     """重算并写回：KitLine 全量替换、非锁定预占全量替换、订单冗余字段更新、生成缺料预警。"""
+    db.flush()  # 会话不自动 flush：先刷出未落库的写入，快照才是最新状态
     acquire_mutex(db)
     snap = load_snapshot(db, today)
     res = compute(snap)

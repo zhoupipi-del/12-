@@ -252,17 +252,17 @@ def run() -> None:
 
     # 自制 / 外协在途
     psvc.create_wo(db, users["jihua"], {"material_id": frame9.id, "qty": 1, "planned_start": d(-1),
-                                        "planned_finish": d(3), "order_id": o2.id, "owner": "焊接班"})
+                                        "planned_finish": d(3), "source_mode": "ORDER", "order_id": o2.id, "owner": "焊接班"})
     psvc.create_wo(db, users["jihua"], {"material_id": frame12.id, "qty": 2, "planned_start": d(0),
-                                        "planned_finish": d(2), "owner": "焊接班"})
+                                        "planned_finish": d(2), "source_mode": "STOCK", "owner": "焊接班"})
     psvc.create_wo(db, users["jihua"], {"material_id": frame80.id, "qty": 10, "planned_start": d(3),
-                                        "planned_finish": d(9), "order_id": o4.id, "owner": "焊接班"})
+                                        "planned_finish": d(9), "source_mode": "ORDER", "order_id": o4.id, "owner": "焊接班"})
     so1 = psvc.create_outsource(db, buyer, {"supplier_id": sup["S006"].id, "material_id": shaft.id, "qty": 2,
-                                            "price": Dc("6800"), "expected_return": d(2)})
+                                            "price": Dc("6800"), "expected_return": d(2), "source_mode": "STOCK"})
     so2 = psvc.create_outsource(db, buyer, {"supplier_id": sup["S007"].id, "material_id": sleeve.id, "qty": 1,
-                                            "price": Dc("5200"), "expected_return": d(3)})
+                                            "price": Dc("5200"), "expected_return": d(3), "source_mode": "STOCK"})
     so3 = psvc.create_outsource(db, buyer, {"supplier_id": sup["S007"].id, "material_id": exciter.id, "qty": 4,
-                                            "price": Dc("9600"), "expected_return": d(1)})
+                                            "price": Dc("9600"), "expected_return": d(1), "source_mode": "STOCK"})
     db.commit()
     # 外协发出前确认图纸（主轴 B 版）
     from .services import drawings as dsvc

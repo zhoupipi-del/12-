@@ -125,6 +125,7 @@ class Material(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String(12))  # MaterialType
     drawing_no: Mapped[str] = mapped_column(String(80), default="", index=True)
     drawing_exempt: Mapped[bool] = mapped_column(Boolean, default=False)  # 免图纸管控（确无受控图纸的标准件）
+    bom_exempt: Mapped[bool] = mapped_column(Boolean, default=False)  # 免 BOM：工艺确无物料投入（需技术明确勾选，缺资料不等于免投料）
     is_common: Mapped[bool] = mapped_column(Boolean, default=False)  # 通用件（多机型共用，参与冲填抢料）
     is_spare: Mapped[bool] = mapped_column(Boolean, default=False)   # 同时作为售后备件
     lead_time_days: Mapped[int] = mapped_column(Integer, default=7)
@@ -459,10 +460,13 @@ class WorkOrder(Base, TimestampMixin):
     planned_start: Mapped[Optional[date]] = mapped_column(Date)
     planned_finish: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(12), default="PLANNED")  # PLANNED / STARTED / DONE / CANCELLED
+    source_mode: Mapped[str] = mapped_column(String(10), default="STOCK")  # ORDER 按整机订单 / STOCK 备库生产
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("so_order.id"))
     owner: Mapped[str] = mapped_column(String(50), default="")
     remark: Mapped[str] = mapped_column(Text, default="")
+    bom_snapshot: Mapped[Optional[str]] = mapped_column(Text)  # 建单时冻结的批准 BOM（JSON [[子件, 含损耗用量]]）：领料/报工/需求都读它
     material: Mapped[Material] = relationship()
+    order: Mapped[Optional[SalesOrder]] = relationship(foreign_keys=[order_id])
 
 
 class OutsourceOrder(Base, TimestampMixin):
@@ -482,10 +486,13 @@ class OutsourceOrder(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(12), default="PLANNED")  # PLANNED / SENT / PARTIAL / RETURNED / CANCELLED
     # TURNKEY 包工包料（外协厂自备料）/ CONSIGNED 本厂供料（发出时按 BOM 发料，发出前计入原料需求）
     supply_mode: Mapped[str] = mapped_column(String(10), default="TURNKEY")
+    source_mode: Mapped[str] = mapped_column(String(10), default="STOCK")  # ORDER 按整机订单 / STOCK 备库生产
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("so_order.id"))
     remark: Mapped[str] = mapped_column(Text, default="")
+    bom_snapshot: Mapped[Optional[str]] = mapped_column(Text)  # 同自制任务：建单时冻结的批准 BOM
     supplier: Mapped[Supplier] = relationship()
     material: Mapped[Material] = relationship()
+    order: Mapped[Optional[SalesOrder]] = relationship(foreign_keys=[order_id])
 
     @property
     def open_qty(self) -> Decimal:

@@ -1,11 +1,12 @@
 """图纸、销售订单、齐套中心、领料、发货。"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -13,7 +14,8 @@ from ..core.deps import current_user, require
 from ..core.errors import BizError
 from ..db import get_db
 from ..models import (ReallocationRequest, Drawing, DrawingVersion, KitLine, Material, OrderStatus, PickList, Reservation, Role,
-                      SalesOrder, ShipmentPlan, User)
+                      SalesOrder, ShipmentPlan, User, PurchaseOrder, PurchaseOrderLine, Supplier, StockLot, Warehouse,
+                      WarehousePurpose, WorkOrder, OutsourceOrder)
 from ..services import drawings as dsvc
 from ..services import kitting
 from ..services import reallocation as ra
@@ -146,6 +148,16 @@ def orders(keyword: str = "", status: str = "", kit_color: str = "", page_no: in
     return page(db, q.order_by(SalesOrder.due_date, SalesOrder.id), page_no, size, serial.order)
 
 
+@router.get("/orders/options")
+def order_options(db: Session = Depends(get_db), _: User = Depends(current_user)):
+    """自制/外协建单使用的在制整机订单下拉。"""
+    q = select(SalesOrder).where(SalesOrder.status.in_(OrderStatus.ACTIVE_FOR_KIT)).order_by(
+        SalesOrder.priority, SalesOrder.due_date, SalesOrder.id)
+    return [{"id": o.id, "label": f"{o.order_no}｜{o.customer}｜{o.product.name}",
+             "order_no": o.order_no, "priority": o.priority, "planned_start": o.planned_start}
+            for o in db.scalars(q).all()]
+
+
 @router.post("/orders")
 def create_order(body: S.OrderIn, db: Session = Depends(get_db), u: User = Depends(require(Role.SALES, Role.PLANNER))):
     o = osvc.create_order(db, u, body.model_dump())
@@ -164,6 +176,81 @@ def order_detail(oid: int, db: Session = Depends(get_db), _: User = Depends(curr
             "reservations": [serial.reservation(db, r) for r in res],
             "drawings": dsvc.required_drawings(db, "SALES_ORDER", oid),
             "picks": [serial.pick_list(db, p) for p in picks], "shipments": [serial.shipment(db, s) for s in ships]}
+
+
+@router.get("/orders/{oid}/material-plan")
+def material_plan(oid: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    """订单备料统一工作台：齐套结果、库存占用、在途及历史采购信息一次返回。"""
+    o = get_or_404(db, SalesOrder, oid, "订单")
+    lines = db.scalars(select(KitLine).where(KitLine.order_id == oid).order_by(KitLine.level, KitLine.id)).all()
+    mids = {x.material_id for x in lines}
+    stock = {mid: qty for mid, qty in db.execute(
+        select(StockLot.material_id, func.coalesce(func.sum(StockLot.qty), 0)).join(Warehouse).where(
+            Warehouse.purpose == WarehousePurpose.PRODUCTION,
+            StockLot.material_id.in_(mids) if mids else False,
+        ).group_by(StockLot.material_id)).all()}
+    held = {mid: qty for mid, qty in db.execute(
+        select(Reservation.material_id, func.coalesce(func.sum(Reservation.qty), 0)).where(
+            Reservation.source_type == "STOCK",
+            Reservation.material_id.in_(mids) if mids else False,
+        ).group_by(Reservation.material_id)).all()}
+    own = {mid: qty for mid, qty in db.execute(
+        select(Reservation.material_id, func.coalesce(func.sum(Reservation.qty), 0)).where(
+            Reservation.order_id == oid, Reservation.source_type == "STOCK"
+        ).group_by(Reservation.material_id)).all()}
+    # 和领料/调拨共用齐套引擎的任务占用结果，避免页面显示“空闲”但真正出库时被保护规则拦截。
+    snap = kitting.load_snapshot(db)
+    task_result = kitting.compute(snap).production_stock
+    task_orders = {(d.kind, d.id): d.order_id for d in snap.prod_demands}
+    task_held: dict[int, Decimal] = {}
+    own_task_held: dict[int, Decimal] = {}
+    for (kind, ref_id, mid), qty in task_result.items():
+        task_held[mid] = task_held.get(mid, 0) + qty
+        if task_orders.get((kind, ref_id)) == oid:
+            own_task_held[mid] = own_task_held.get(mid, 0) + qty
+    histories: dict[int, list[dict]] = {}
+    for mid in mids:
+        rows = db.execute(select(PurchaseOrderLine, PurchaseOrder, Supplier).join(
+            PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.po_id).join(
+            Supplier, Supplier.id == PurchaseOrder.supplier_id).where(
+            PurchaseOrderLine.material_id == mid,
+            PurchaseOrder.status != "CANCELLED",
+        ).order_by(PurchaseOrder.order_date.desc(), PurchaseOrderLine.id.desc()).limit(5)).all()
+        seen = set()
+        histories[mid] = []
+        for pl, po, sp in rows:
+            key = (sp.id, str(pl.price))
+            if key in seen:
+                continue
+            seen.add(key)
+            histories[mid].append({"supplier_id": sp.id, "supplier": sp.name, "price": pl.price,
+                                   "order_date": po.order_date, "po_no": po.po_no})
+            if len(histories[mid]) == 3:
+                break
+    task_counts = {}
+    for mid in mids:
+        task_counts[mid] = {
+            "work_orders": db.scalar(select(func.count()).select_from(WorkOrder).where(
+                WorkOrder.order_id == oid, WorkOrder.material_id == mid,
+                WorkOrder.status.in_(["PLANNED", "STARTED"]))) or 0,
+            "outsource_orders": db.scalar(select(func.count()).select_from(OutsourceOrder).where(
+                OutsourceOrder.order_id == oid, OutsourceOrder.material_id == mid,
+                OutsourceOrder.status.in_(["PLANNED", "SENT", "PARTIAL"]))) or 0,
+        }
+    out = []
+    for k in lines:
+        d = serial.kit_line(k)
+        total = stock.get(k.material_id, 0)
+        total_held, own_held = held.get(k.material_id, 0), own.get(k.material_id, 0)
+        task_total, own_task = task_held.get(k.material_id, 0), own_task_held.get(k.material_id, 0)
+        d.update({"stock_total": total,
+                  "occupied_by_others": max(total_held - own_held + task_total - own_task, 0),
+                  "own_reserved": own_held + own_task,
+                  "task_occupied": task_total,
+                  "stock_free": max(total - total_held - task_total, 0),
+                  "purchase_history": histories.get(k.material_id, []), **task_counts[k.material_id]})
+        out.append(d)
+    return {"order": serial.order(o), "buffer_days": settings.kit_buffer_days, "lines": out}
 
 
 @router.put("/orders/{oid}")
@@ -295,6 +382,8 @@ def overview(db: Session = Depends(get_db), _: User = Depends(current_user)):
         d["seq"] = seq
         d["need_date"] = kitting.order_need_date(o, lead)
         d["ready_in_2_days"] = bool(o.kit_ready_date and (o.kit_ready_date - date.today()).days <= settings.kit_buffer_days)
+        d["prestart_check_due"] = bool(o.kit_status != "READY" and
+                                         d["need_date"] - date.today() <= timedelta(days=settings.kit_buffer_days))
         items.append(d)
     summary = {c: sum(1 for i in items if i["kit_color"] == c) for c in ("GREEN", "YELLOW", "RED")}
     return {"buffer_days": settings.kit_buffer_days, "summary": summary, "items": items}

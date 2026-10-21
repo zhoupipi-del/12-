@@ -23,7 +23,7 @@ DEFAULT_SECRET = "change-me-in-production"
 
 @dataclass
 class Settings:
-    app_name: str = "一二矿山 生产协同系统"
+    app_name: str = "U9 生产协同系统"
     # 运行环境：production（默认，最严格）/ demo（演示：允许演示数据与默认账号）/ development / test
     # 不设置就按 production 处理，宁可启动失败也不带着默认密码上线。
     app_env: str = field(default_factory=lambda: os.getenv("APP_ENV", "production").strip().lower())
@@ -39,6 +39,7 @@ class Settings:
     kit_buffer_days: int = field(default_factory=lambda: int(os.getenv("KIT_BUFFER_DAYS", "2")))  # 提前 2 天预判
     stagnant_days: int = field(default_factory=lambda: int(os.getenv("STAGNANT_DAYS", "180")))  # 呆滞判定天数
     edit_lock_minutes: int = field(default_factory=lambda: int(os.getenv("EDIT_LOCK_MINUTES", "15")))
+    alert_scan_minutes: int = field(default_factory=lambda: int(os.getenv("ALERT_SCAN_MINUTES", "5")))
 
     # AI（可插拔，默认关闭；OpenAI 兼容协议：DeepSeek / 通义千问 / 本地 Ollama 等）
     ai_enabled: bool = field(default_factory=lambda: _bool("AI_ENABLED", False))

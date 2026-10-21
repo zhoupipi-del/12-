@@ -27,7 +27,7 @@ def user(u: User) -> dict:
 
 
 def material(m: Material) -> dict:
-    return {**pick(m, "id", "code", "name", "spec", "unit", "type", "drawing_no", "drawing_exempt", "is_common", "is_spare",
+    return {**pick(m, "id", "code", "name", "spec", "unit", "type", "drawing_no", "drawing_exempt", "bom_exempt", "is_common", "is_spare",
                    "lead_time_days", "inbound_days", "safety_min", "safety_max", "spare_min", "spare_max", "default_buyer_id",
                    "default_supplier_id", "is_active"),
             "type_label": MaterialType.LABELS.get(m.type, m.type)}
@@ -104,14 +104,16 @@ def po(db: Session, p: PurchaseOrder, with_lines: bool = True) -> dict:
 
 def wo(w: WorkOrder) -> dict:
     return {**pick(w, "id", "wo_no", "material_id", "qty", "done_qty", "planned_start", "planned_finish", "status",
-                   "order_id", "owner", "remark"),
-            "code": w.material.code, "name": w.material.name, "drawing_no": w.material.drawing_no}
+                   "source_mode", "order_id", "owner", "remark"),
+            "code": w.material.code, "name": w.material.name, "drawing_no": w.material.drawing_no,
+            "order_no": w.order.order_no if getattr(w, "order", None) else ""}
 
 
 def outsource(o: OutsourceOrder) -> dict:
     return {**pick(o, "id", "os_no", "supplier_id", "material_id", "drawing_no", "qty", "price", "sent_date",
-                   "expected_return", "arrived_qty", "received_qty", "status", "order_id", "remark", "supply_mode"),
-            "supplier": o.supplier.name, "code": o.material.code, "name": o.material.name, "open_qty": o.open_qty}
+                   "expected_return", "arrived_qty", "received_qty", "status", "source_mode", "order_id", "remark", "supply_mode"),
+            "supplier": o.supplier.name, "code": o.material.code, "name": o.material.name, "open_qty": o.open_qty,
+            "order_no": o.order.order_no if getattr(o, "order", None) else ""}
 
 
 def arrival(db: Session, a: Arrival) -> dict:
