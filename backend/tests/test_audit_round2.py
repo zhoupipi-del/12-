@@ -45,7 +45,7 @@ def test_r1_work_order_only_unconsumed_tail_can_be_returned(api):
     raw, sub = api.material("R1W-RAW"), api.material("R1W-SUB", "MAKE")
     api.bom(sub, raw, 2)
     api.stock(raw, 4)
-    w = api.post("/work-orders", {"material_id": sub, "qty": 2})
+    w = api.post("/work-orders", {"material_id": sub, "qty": 2, "source_mode": "STOCK"})
     api.post(f"/work-orders/{w['id']}/start")
     pk = api.post(f"/work-orders/{w['id']}/pick", {})
     api.post(f"/picks/{pk['id']}/post")                                   # 领 4
@@ -61,7 +61,7 @@ def test_r2_work_order_claimed_raw_cannot_be_taken_by_other_order(api):
     api.bom(fg, sub)
     api.stock(raw, 1)
     oid = api.order(fg)
-    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "order_id": oid})
+    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "source_mode": "ORDER", "order_id": oid})
     other = api.material("R2-OTHER", "PRODUCT")
     api.bom(other, raw)
     o2 = api.order(other, 4)
@@ -112,7 +112,7 @@ def test_r5_work_order_inherits_parent_frozen_bom(api):
     api.bom(sub, raw1)
     api.bom(fg, sub)
     oid = api.order(fg)
-    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "order_id": oid})
+    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "source_mode": "ORDER", "order_id": oid})
     api.bom(sub, raw2, version="V2")
     api.post(f"/work-orders/{w['id']}/start")
     pk = api.post(f"/work-orders/{w['id']}/pick", {})
@@ -135,10 +135,10 @@ def test_r6_draft_pick_cannot_post_after_order_cancelled(api):
 
 def test_r7_work_order_without_bom_cannot_start_or_report(api):
     sub = api.material("R7-NOBOM", "MAKE")
-    w = api.post("/work-orders", {"material_id": sub, "qty": 1})
+    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "source_mode": "STOCK"})
     api.post(f"/work-orders/{w['id']}/start", status=400)
     ok = api.material("R7-EXEMPT", "MAKE", bom_exempt=True)               # 明确声明“无物料投入”的工艺才放行
-    w2 = api.post("/work-orders", {"material_id": ok, "qty": 1})
+    w2 = api.post("/work-orders", {"material_id": ok, "qty": 1, "source_mode": "STOCK"})
     api.post(f"/work-orders/{w2['id']}/start")
     api.post(f"/work-orders/{w2['id']}/report", {"qty": 1})
     assert api.qty(ok) == 1

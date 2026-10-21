@@ -54,6 +54,7 @@
           </div>
         </el-form-item>
         <el-form-item label="入库仓库"><RefSelect v-model="inf.warehouse_id" kind="warehouse" placeholder="默认生产物料库" /></el-form-item>
+        <el-form-item label="入库库位"><el-select v-model="inf.location_id" clearable placeholder="选择仓库后选择库位" style="width:100%"><el-option v-for="x in locations" :key="x.id" :value="x.id" :label="`${x.code} ${x.name}`" /></el-select></el-form-item>
         <el-form-item label="批次号"><el-input v-model="inf.lot_no" placeholder="默认用到货单号" /></el-form-item>
         <el-form-item label="说明"><el-input v-model="inf.note" /></el-form-item>
       </el-form>
@@ -63,7 +64,7 @@
 </template>
 
 <script setup>
-import { onActivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { get, post } from '../api'
 import { useAuth } from '../store'
@@ -100,8 +101,10 @@ async function saveArr() {
 const inspOpen = ref(false)
 const cur = ref(null)
 const inf = ref({})
+const warehouses = ref([])
+const locations = computed(() => warehouses.value.find((w) => w.id === inf.value.warehouse_id)?.locations || [])
 const cls = ref(null)
-function openInsp(row) { cur.value = row; cls.value = null; inf.value = { qualified: Number(row.qty), rejected: 0, reject_reason: '', warehouse_id: null, lot_no: '', note: '' }; inspOpen.value = true }
+function openInsp(row) { cur.value = row; cls.value = null; inf.value = { qualified: Number(row.qty), rejected: 0, reject_reason: '', warehouse_id: null, location_id: null, lot_no: '', note: '' }; inspOpen.value = true }
 async function classify() { cls.value = await post('/exceptions/classify', { text: inf.value.reject_reason || '不合格' }) }
 async function saveInsp() {
   const r = await post(`/arrivals/${cur.value.id}/inspect`, inf.value)
@@ -109,6 +112,6 @@ async function saveInsp() {
   ElMessage.success(r.exception_no ? `合格品已入库；不合格已生成异常单 ${r.exception_no}` : '已入库，齐套已重算')
   load()
 }
-onMounted(load)
+onMounted(async () => { warehouses.value = await get('/warehouses'); await load() })
 onActivated(load)
 </script>

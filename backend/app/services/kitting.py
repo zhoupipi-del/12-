@@ -89,6 +89,8 @@ class ProdDemand:
     started: bool
     planned: date
     order_id: int | None = None
+    # 关联整机订单的冲填顺序。让急单优先级贯通到自制/本厂供料外协的原料竞争。
+    order_sort: tuple = field(default_factory=tuple)
 
 
 @dataclass
@@ -212,7 +214,13 @@ def _compute_once(snap: Snapshot) -> tuple[KitResult, dict[tuple[int, int], Deci
                 s.date = FAR_FUTURE if short else max(s.date, ready)
                 s.confirmed = s.confirmed and not short
 
-    ordered = sorted(snap.prod_demands, key=lambda d: (not d.started, d.planned, d.kind, d.id))
+    ordered = sorted(snap.prod_demands, key=lambda d: (
+        not d.started,
+        d.order_sort or (1, 9999, 9, d.planned, d.label),
+        d.planned,
+        d.kind,
+        d.id,
+    ))
     for d in ordered:
         if d.started:
             claim_prod(d)
@@ -390,7 +398,8 @@ def _doc_bom(db: Session, doc, boms: dict[int, list[tuple[int, Decimal]]]) -> li
     return boms.get(doc.material_id, [])
 
 
-def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], today: date) -> list[ProdDemand]:
+def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], today: date,
+                       order_keys: dict[int, tuple]) -> list[ProdDemand]:
     """在制自制任务 / 本厂供料外协单：BOM 原料需求 − 已过账领料。"""
     iss_wo: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
     iss_os: dict[tuple[int, int], Decimal] = defaultdict(lambda: ZERO)
@@ -412,14 +421,14 @@ def _load_prod_demands(db: Session, boms: dict[int, list[tuple[int, Decimal]]], 
         items = [(c, q) for c, q in items if q > 0]
         if items:
             out.append(ProdDemand("WO", wo.id, wo.wo_no, wo.material_id, items, wo.status == "STARTED",
-                                  wo.planned_finish or today, wo.order_id))
+                                  wo.planned_finish or today, wo.order_id, order_keys.get(wo.order_id, ())))
     for o in db.scalars(select(OutsourceOrder).where(OutsourceOrder.status.in_(["PLANNED", "SENT", "PARTIAL"]),
                                                       OutsourceOrder.supply_mode == "CONSIGNED")).all():
         items = [(cid, max(per * D(o.qty) - iss_os.get((o.id, cid), ZERO), ZERO)) for cid, per in _doc_bom(db, o, boms)]
         items = [(c, q) for c, q in items if q > 0]
         if items:
             out.append(ProdDemand("OUTSOURCE", o.id, o.os_no, o.material_id, items, o.status != "PLANNED",
-                                  o.expected_return or today, o.order_id))
+                                  o.expected_return or today, o.order_id, order_keys.get(o.order_id, ())))
     return out
 
 
@@ -508,7 +517,7 @@ def load_snapshot(db: Session, today: date | None = None, pin_override: dict[int
               for r in db.scalars(select(Reservation).where(Reservation.locked.is_(False),
                                                             Reservation.source_type == "STOCK")).all()
               if r.order_id in active_ids]
-    prod = _load_prod_demands(db, boms, today)
+    prod = _load_prod_demands(db, boms, today, {o.id: o.sort_key for o in orders})
     return Snapshot(today, settings.kit_buffer_days, orders, boms, lead, dict(on_hand), dict(incoming), issued, locked, frozen, prod)
 
 

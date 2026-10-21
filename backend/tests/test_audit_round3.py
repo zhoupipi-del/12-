@@ -20,6 +20,7 @@ def api(client, H):
 
 
 def task(api, mid, kind="MAKE", **kw):
+    kw.setdefault("source_mode", "ORDER" if kw.get("order_id") else "STOCK")
     if kind == "MAKE":
         return api.post("/work-orders", {"material_id": mid, "qty": 1, **kw}), "/work-orders"
     with SessionLocal() as db:

@@ -9,13 +9,40 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.errors import BizError
-from ..models import (Bom, Material, MaterialType, OutsourceOrder, SalesOrder, PickLine, PickList, Supplier, TxnType, User,
-                      WorkOrder, ZERO)
+from ..models import (Bom, Material, MaterialType, OrderStatus, OutsourceOrder, SalesOrder, PickLine, PickList, Supplier,
+                      TxnType, User, WorkOrder, ZERO)
 from .common import D, audit, get_or_404, next_no
 from .drawings import assert_confirmed, assert_not_held
 from . import protection as prot
 from .inventory import default_warehouse, stock_in
 from .kitting import acquire_mutex
+
+TASK_SOURCE_MODES = {"ORDER", "STOCK"}
+
+
+def _validate_task_source(db: Session, data: dict, material_id: int) -> tuple[str, int | None]:
+    """任务来源必须显式选择；按订单生产时校验订单状态和冻结 BOM 归属。"""
+    mode, order_id = data.get("source_mode"), data.get("order_id")
+    if mode not in TASK_SOURCE_MODES:
+        raise BizError("请选择任务来源：按整机订单生产或备库生产")
+    if mode == "STOCK":
+        if order_id:
+            raise BizError("备库生产不能同时关联整机订单")
+        return mode, None
+    if not order_id:
+        raise BizError("按整机订单生产必须选择整机订单")
+    order = get_or_404(db, SalesOrder, order_id, "整机订单")
+    if order.status not in OrderStatus.ACTIVE_FOR_KIT:
+        raise BizError(f"订单 {order.order_no} 已结束或取消，不能再创建生产任务")
+    if order.bom_snapshot:
+        tree = json.loads(order.bom_snapshot)
+    else:
+        from .orders import active_bom, bom_snapshot
+        top = active_bom(db, order.product_id)
+        tree = bom_snapshot(db, top) if top else {}
+    if str(material_id) not in tree:
+        raise BizError(f"该物料不在订单 {order.order_no} 的批准 BOM 中，不能错误关联")
+    return mode, order.id
 
 
 def freeze_bom(db: Session, material_id: int, order_id: int | None = None) -> str | None:
@@ -57,9 +84,10 @@ def create_wo(db: Session, user: User, data: dict) -> WorkOrder:
     m = get_or_404(db, Material, data["material_id"], "物料")
     if m.type != MaterialType.MAKE:
         raise BizError("自制任务只能针对自制件")
+    source_mode, order_id = _validate_task_source(db, data, m.id)
     w = WorkOrder(wo_no=next_no(db, WorkOrder, "wo_no", "WO"), material_id=m.id, qty=D(data["qty"]),
                   planned_start=data.get("planned_start"), planned_finish=data.get("planned_finish"),
-                  order_id=data.get("order_id"), owner=data.get("owner", ""), remark=data.get("remark", ""))
+                  source_mode=source_mode, order_id=order_id, owner=data.get("owner", ""), remark=data.get("remark", ""))
     w.bom_snapshot = freeze_bom(db, m.id, w.order_id)
     db.add(w)
     db.flush()
@@ -137,10 +165,11 @@ def create_outsource(db: Session, user: User, data: dict) -> OutsourceOrder:
     s = get_or_404(db, Supplier, data["supplier_id"], "外协厂")
     if m.type != MaterialType.OUTSOURCE:
         raise BizError("外协单只能针对外协件")
+    source_mode, order_id = _validate_task_source(db, data, m.id)
     o = OutsourceOrder(os_no=next_no(db, OutsourceOrder, "os_no", "OS"), supplier_id=s.id, material_id=m.id,
                        drawing_no=data.get("drawing_no") or m.drawing_no, qty=D(data["qty"]),
                        price=D(data.get("price") or 0), expected_return=data.get("expected_return"),
-                       order_id=data.get("order_id"), supply_mode=data.get("supply_mode") or "TURNKEY",
+                       source_mode=source_mode, order_id=order_id, supply_mode=data.get("supply_mode") or "TURNKEY",
                        remark=data.get("remark", ""))
     o.bom_snapshot = freeze_bom(db, m.id, o.order_id)
     db.add(o)

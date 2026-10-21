@@ -3,7 +3,7 @@
     <div class="page-head">
       <div>
         <h1>齐套中心</h1>
-        <p>按冲填顺序排列：已下达优先 → 人工置顶 → 优先级 → 需求日。在途到货需早于需求日 {{ buffer }} 天才算“在途可齐”。</p>
+        <p>在途可用日＝预计到货日＋检验转运天数，早于或等于需求日即按时；{{ buffer }} 天是开工前核查节点。</p>
       </div>
       <div class="toolbar">
         <el-radio-group v-model="color" size="small">
@@ -12,7 +12,7 @@
           <el-radio-button value="YELLOW">在途可齐 {{ summary.YELLOW || 0 }}</el-radio-button>
           <el-radio-button value="GREEN">已齐 {{ summary.GREEN || 0 }}</el-radio-button>
         </el-radio-group>
-        <el-checkbox v-model="soon">只看 {{ buffer }} 天内可齐套</el-checkbox>
+        <el-checkbox v-model="soon">只看已到开工前 {{ buffer }} 天核查节点</el-checkbox>
         <el-button @click="recalc" :loading="busy"><el-icon><Refresh /></el-icon>重新计算</el-button>
       </div>
     </div>
@@ -40,7 +40,7 @@
         <el-table-column label="预计齐套" width="110">
           <template #default="{ row }">
             <template v-if="row.kit_ready_date"><span class="num" :class="{ late: row.kit_ready_date > row.need_date }">{{ row.kit_ready_date }}</span>
-              <div v-if="row.ready_in_2_days" class="small ok">{{ buffer }} 天内可齐</div></template>
+              <div v-if="row.prestart_check_due" class="small short">需立即核查</div></template>
             <span v-else class="short small">缺料，无法确定</span>
           </template>
         </el-table-column>
@@ -89,7 +89,7 @@ const soon = ref(false)
 const loading = ref(false)
 const busy = ref(false)
 const todayStr = today()
-const rows = computed(() => items.value.filter((r) => (!color.value || r.kit_color === color.value) && (!soon.value || r.ready_in_2_days)))
+const rows = computed(() => items.value.filter((r) => (!color.value || r.kit_color === color.value) && (!soon.value || r.prestart_check_due)))
 
 async function load() {
   loading.value = true

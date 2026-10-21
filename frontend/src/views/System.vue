@@ -50,7 +50,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="数据导入" name="import">
-        <p class="small">上线初始化用。顺序：先导物料，再导 BOM，最后导期初库存。每次先“预检”，没有错误再正式导入；整批要么全部成功，要么全部不写入。</p>
+        <p class="small">U8 停用、U9 接管的一次性迁移。建议顺序：供应商、物料、BOM、期初库存、未结订单、未结采购、历史采购价格。每批先预检，正式导入整批提交。</p>
         <div class="imp" v-for="k in IMPORTS" :key="k.kind">
           <div class="imp-h"><b>{{ k.label }}</b><span class="muted small">{{ k.tip }}</span></div>
           <div class="toolbar">
@@ -115,9 +115,13 @@ const aiLogs = ref([])
 const testing = ref(false)
 const audit = ref({ items: [], total: 0 })
 const IMPORTS = [
+  { kind: 'suppliers', label: '供应商', tip: '迁移供应商编码、联系人和外协厂标识' },
   { kind: 'materials', label: '物料', tip: '按编码新增或更新；类型填 整机/自制/外购/外协' },
   { kind: 'boms', label: 'BOM', tip: '每行一个子件；“生效”填是则导入后直接生效' },
   { kind: 'stock', label: '期初库存', tip: '按批次导入，入库日期决定先进先出顺序' },
+  { kind: 'orders', label: '未结订单', tip: '仅支持已录入/已下达；装配中订单先核对已领在制后专项迁移' },
+  { kind: 'open_pos', label: '未结采购', tip: '迁移尚未到货的余额，导入后直接作为在途供应' },
+  { kind: 'po_history', label: '历史采购价格', tip: '按需迁移四年价格记录，用于备料工作台询价参考，不影响库存' },
 ]
 const files = ref({})
 const results = ref({})

@@ -126,7 +126,7 @@ def test_05_planned_work_order_does_not_hide_raw_shortage(api):
     api.bom(sub, raw)
     api.bom(prod, sub)
     oid = api.order(prod)
-    api.post("/work-orders", {"material_id": sub, "qty": 1, "order_id": oid,
+    api.post("/work-orders", {"material_id": sub, "qty": 1, "source_mode": "ORDER", "order_id": oid,
                               "planned_finish": (TODAY + timedelta(days=3)).isoformat()})
     assert api.get(f"/orders/{oid}")["kit_status"] != "INCOMING_OK"
     assert any(s["material_id"] == raw for s in api.get("/kitting/shortages"))
@@ -135,7 +135,7 @@ def test_05_planned_work_order_does_not_hide_raw_shortage(api):
 def test_06_work_order_cannot_report_output_without_issued_raw(api):
     raw, sub = api.material("REG-WO-RAW"), api.material("REG-WO-SUB", "MAKE")
     api.bom(sub, raw, 2)
-    w = api.post("/work-orders", {"material_id": sub, "qty": 1})
+    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "source_mode": "STOCK"})
     api.post(f"/work-orders/{w['id']}/start")
     api.post(f"/work-orders/{w['id']}/report", {"qty": 1}, status=400)
     assert api.qty(sub) == 0
@@ -239,11 +239,11 @@ def test_11_failed_recalc_rolls_back_inventory_change(api, monkeypatch):
 
 def test_12_drawing_no_without_controlled_drawing_blocks_start(api):
     sub = api.material("REG-DWG", "MAKE", drawing="NOT-ARCHIVED-" + tag())
-    w = api.post("/work-orders", {"material_id": sub, "qty": 1})
+    w = api.post("/work-orders", {"material_id": sub, "qty": 1, "source_mode": "STOCK"})
     req = api.c.get("/api/drawings-required", params={"ref_type": "WORK_ORDER", "ref_id": w["id"]}, headers=api.h).json()
     assert req and req[0].get("missing")
     api.post(f"/work-orders/{w['id']}/start", status=400)
     # 确无图纸的标准件：明确勾选免管控后才放行
     ex = api.material("REG-DWG-EX", "MAKE", drawing="STD-" + tag(), drawing_exempt=True, bom_exempt=True)
-    w2 = api.post("/work-orders", {"material_id": ex, "qty": 1})
+    w2 = api.post("/work-orders", {"material_id": ex, "qty": 1, "source_mode": "STOCK"})
     assert api.post(f"/work-orders/{w2['id']}/start")["status"] == "STARTED"

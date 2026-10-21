@@ -7,7 +7,7 @@
           <path d="M4 26 H28" stroke="#fff" stroke-width="2" />
         </svg>
         <div v-if="!collapsed">
-          <b>生产协同</b>
+          <b>U9 生产协同</b>
           <span>一二矿山科技</span>
         </div>
       </div>

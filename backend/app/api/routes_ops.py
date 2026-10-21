@@ -390,7 +390,9 @@ def audit_logs(entity: str = "", entity_id: int | None = None, page_no: int = 1,
 # ---------------------------------------------------------------- Excel 导入
 @router.get("/import/{kind}/template")
 def import_template(kind: str, _: User = Depends(current_user)):
-    names = {"materials": "物料导入模板", "boms": "BOM导入模板", "stock": "期初库存导入模板"}
+    names = {"materials": "物料导入模板", "boms": "BOM导入模板", "stock": "期初库存导入模板",
+             "suppliers": "供应商迁移模板", "orders": "未结订单迁移模板", "open_pos": "未结采购迁移模板",
+             "po_history": "历史采购价格迁移模板"}
     from urllib.parse import quote
     return Response(importer.template(kind),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -402,6 +404,8 @@ def import_run(kind: str, dry_run: bool = True, file: UploadFile = File(...), db
                u: User = Depends(require(Role.ADMIN, Role.TECH, Role.WAREHOUSE))):
     if kind == "stock" and not ({Role.ADMIN, Role.WAREHOUSE} & set(u.role_list)):
         raise BizError("期初库存只能由仓库或管理员导入", 403)
+    if kind in ("orders", "open_pos", "po_history", "suppliers") and Role.ADMIN not in u.role_list:
+        raise BizError("上线迁移数据只能由管理员导入", 403)
     r = importer.run(db, u, kind, file.file.read(), dry_run)
     if r["committed"]:
         # 导入 + 审计 + 齐套重算同一个事务：重算失败整批导入回滚，修好后重新导入不会重复入库

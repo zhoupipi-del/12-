@@ -186,6 +186,7 @@ class WorkOrderIn(BaseModel):
     qty: Decimal = Field(gt=0)
     planned_start: Optional[date] = None
     planned_finish: Optional[date] = None
+    source_mode: str = Field(pattern="^(ORDER|STOCK)$")
     order_id: Optional[int] = None
     owner: str = ""
     remark: str = ""
@@ -203,6 +204,7 @@ class OutsourceIn(BaseModel):
     price: Optional[Decimal] = None
     expected_return: Optional[date] = None
     drawing_no: Optional[str] = None
+    source_mode: str = Field(pattern="^(ORDER|STOCK)$")
     order_id: Optional[int] = None
     supply_mode: str = Field(default="TURNKEY", pattern="^(TURNKEY|CONSIGNED)$")  # 包工包料 / 本厂供料
     remark: str = ""

@@ -5,7 +5,7 @@
         <path d="M4 26 L13 8 L18 17 L21 12 L28 26 Z" fill="var(--copper)" />
         <path d="M4 26 H28" stroke="var(--ink)" stroke-width="2" />
       </svg>
-      <h1>生产协同系统</h1>
+      <h1>U9 生产协同系统</h1>
       <p>订单、齐套、采购、仓储、车间一张网</p>
       <el-input v-model="username" size="large" placeholder="用户名" autocomplete="username" />
       <el-input v-model="password" size="large" type="password" show-password placeholder="密码" autocomplete="current-password" />

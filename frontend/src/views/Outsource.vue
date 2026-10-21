@@ -4,13 +4,14 @@
       <div><h1>外协单</h1><p>发出前须确认图纸当前版本；回厂后在【到货检验】登记，合格品入库参与齐套。</p></div>
       <div class="toolbar">
         <el-select v-model="status" style="width: 130px" @change="load"><el-option value="PLANNED,SENT,PARTIAL" label="未完成" /><el-option value="" label="全部" /></el-select>
-        <el-button v-if="auth.can('BUYER', 'PLANNER')" type="primary" @click="openNew">新建外协单</el-button>
+        <el-button v-if="auth.can('BUYER', 'PLANNER')" type="primary" @click="openNew()">新建外协单</el-button>
       </div>
     </div>
     <div class="panel">
       <el-table :data="list">
         <el-table-column label="外协单" width="140"><template #default="{ row }"><span class="no">{{ row.os_no }}</span></template></el-table-column>
         <el-table-column prop="supplier" label="外协厂" min-width="140" />
+        <el-table-column prop="order_no" label="任务来源" width="145"><template #default="{ row }"><span v-if="row.source_mode === 'STOCK'">备库生产</span><span v-else class="no">{{ row.order_no }}</span></template></el-table-column>
         <el-table-column label="物料" min-width="170"><template #default="{ row }"><span class="no">{{ row.code }}</span> {{ row.name }}</template></el-table-column>
         <el-table-column label="图号" width="150"><template #default="{ row }"><span class="no small">{{ row.drawing_no }}</span></template></el-table-column>
         <el-table-column label="数量 / 已回" width="100" align="right"><template #default="{ row }"><span class="num">{{ num(row.qty) }} / {{ num(row.received_qty) }}</span></template></el-table-column>
@@ -32,6 +33,9 @@
 
     <el-dialog v-model="open" title="新建外协单" width="480px">
       <el-form label-width="80px">
+        <el-form-item label="任务来源" required><el-radio-group v-model="f.source_mode" @change="sourceChanged"><el-radio value="ORDER">整机订单</el-radio><el-radio value="STOCK">备库生产</el-radio></el-radio-group></el-form-item>
+        <el-form-item v-if="f.source_mode === 'ORDER'" label="整机订单" required><el-select v-model="f.order_id" filterable style="width:100%"><el-option v-for="o in orderOpts" :key="o.id" :value="o.id" :label="o.label" /></el-select></el-form-item>
+        <el-alert v-else type="info" :closable="false" title="备库外协不占用某张整机订单；本厂供料仍会保护原料。" style="margin-bottom:12px" />
         <el-form-item label="外协件"><MaterialSelect v-model="f.material_id" type="OUTSOURCE" /></el-form-item>
         <el-form-item label="外协厂"><RefSelect v-model="f.supplier_id" kind="outsourcer" /></el-form-item>
         <el-form-item label="数量"><el-input-number v-model="f.qty" :min="1" /></el-form-item>
@@ -58,6 +62,7 @@
 
 <script setup>
 import { onActivated, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { get, post, put } from '../api'
 import { useAuth } from '../store'
@@ -68,12 +73,15 @@ import { OS_STATUS, day, num, relDay, today } from '../utils'
 
 defineOptions({ name: 'Outsource' })
 const auth = useAuth()
+const route = useRoute()
 const status = ref('PLANNED,SENT,PARTIAL')
 const list = ref([])
 async function load() { list.value = (await get('/outsource', { status: status.value })).items }
 const open = ref(false)
 const f = ref({})
-function openNew() { f.value = { material_id: null, supplier_id: null, qty: 1, price: 0, expected_return: today(14), supply_mode: 'TURNKEY' }; open.value = true }
+const orderOpts = ref([])
+function openNew(prefill = {}) { f.value = { source_mode: 'ORDER', order_id: null, material_id: null, supplier_id: null, qty: 1, price: 0, expected_return: today(14), supply_mode: 'TURNKEY', ...prefill }; open.value = true }
+function sourceChanged(v) { if (v === 'STOCK') f.value.order_id = null }
 async function save() { await post('/outsource', f.value); open.value = false; load() }
 async function send(row) { await post(`/outsource/${row.id}/send`); ElMessage.success('已发出'); load() }
 async function pickRaw(row) { await post(`/outsource/${row.id}/pick`); ElMessage.success('已生成领料单，请到【领料】过账出库') }
@@ -92,6 +100,10 @@ async function confirmDwg() {
   dwgOpen.value = false
   ElMessage.success('已确认')
 }
-onMounted(load)
+onMounted(async () => {
+  orderOpts.value = await get('/orders/options')
+  await load()
+  if (route.query.order_id) openNew({ order_id: Number(route.query.order_id), material_id: Number(route.query.material_id), qty: Number(route.query.qty || 1) })
+})
 onActivated(load)
 </script>

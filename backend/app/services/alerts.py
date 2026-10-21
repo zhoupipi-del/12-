@@ -147,7 +147,8 @@ def scan_overdue_orders(db: Session, today: date | None = None) -> int:
     return len(keep)
 
 
-def scan_all(db: Session) -> dict:
+def scan_all(db: Session, commit: bool = True) -> dict:
     r = {"stock": scan_stock(db), "exceptions": scan_exceptions(db), "overdue": scan_overdue_orders(db)}
-    db.commit()
+    if commit:
+        db.commit()
     return r

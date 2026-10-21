@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi.encoders import jsonable_encoder
@@ -13,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from .api import routes_master, routes_ops, routes_plan, routes_supply
@@ -22,6 +26,7 @@ from .core.security import new_portal_token
 from .db import Base, SessionLocal, engine
 from . import models  # noqa: F401  确保模型注册
 
+log = logging.getLogger(__name__)
 
 
 def startup() -> None:
@@ -38,9 +43,10 @@ def startup() -> None:
         try:
             from .models import SysMutex
             from .models import now as _now
-            if db.get(SysMutex, "kitting") is None:  # 预建互斥行，避免并发首次创建时的间隙锁死锁
-                db.add(SysMutex(name="kitting", touched_at=_now()))
-                db.commit()
+            for mutex_name in ("kitting", "alert_scan"):
+                if db.get(SysMutex, mutex_name) is None:  # 预建互斥行，避免并发首次创建时的间隙锁死锁
+                    db.add(SysMutex(name=mutex_name, touched_at=_now()))
+            db.commit()
             if not get_setting(db, "board_key"):
                 set_setting(db, "board_key", new_portal_token())
                 db.commit()
@@ -48,10 +54,54 @@ def startup() -> None:
             db.rollback()
 
 
+def run_scheduled_alert_scan(force: bool = False) -> bool:
+    """定时巡检的一次执行；数据库租约保证多进程部署时只有一个实例真正扫描。"""
+    from .services import alerts, kitting
+    from .models import SysMutex, now
+    with SessionLocal() as db:
+        try:
+            lease = db.scalar(select(SysMutex).where(SysMutex.name == "alert_scan").with_for_update())
+            if lease is None:
+                lease = SysMutex(name="alert_scan")
+                db.add(lease)
+                db.flush()
+            cutoff = now() - timedelta(minutes=max(settings.alert_scan_minutes, 1))
+            if not force and lease.touched_at and lease.touched_at >= cutoff:
+                db.rollback()
+                return False
+            kitting.recalc(db, commit=False)
+            alerts.scan_all(db, commit=False)
+            lease.touched_at = now()
+            db.commit()
+            return True
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            log.exception("U9 自动预警巡检失败")
+            return False
+
+
+async def _alert_loop(stop: asyncio.Event) -> None:
+    seconds = max(settings.alert_scan_minutes, 1) * 60
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            await asyncio.to_thread(run_scheduled_alert_scan)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     startup()
-    yield
+    stop = asyncio.Event()
+    task = None
+    if settings.app_env != "test" and settings.alert_scan_minutes > 0:
+        task = asyncio.create_task(_alert_loop(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        if task:
+            await task
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan,
