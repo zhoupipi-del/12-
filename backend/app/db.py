@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from fastapi import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -42,16 +41,11 @@ engine = make_engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def get_db(request: Request) -> Iterator[Session]:
+def get_db() -> Iterator[Session]:
+    """只提供会话。写请求的全局互斥锁在【鉴权通过之后】由 core.deps.lock_for_write 获取：
+    匿名、令牌无效或无权限的请求不会去排队争锁，也就拖不慢合法写入。"""
     db = SessionLocal()
     try:
-        # 写入口先拿齐套全局锁，再读/锁业务单据，避免“完工先锁订单、收货先锁来源、
-        # 最后重算再争全局锁”的相反顺序。只读请求和 AI 辅助查询不持有业务互斥锁。
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith(
-            ("/api/auth/", "/api/ai/")
-        ):
-            from .services.kitting import acquire_mutex
-            acquire_mutex(db)
         yield db
     finally:
         db.close()

@@ -465,6 +465,9 @@ class WorkOrder(Base, TimestampMixin):
     owner: Mapped[str] = mapped_column(String(50), default="")
     remark: Mapped[str] = mapped_column(Text, default="")
     bom_snapshot: Mapped[Optional[str]] = mapped_column(Text)  # 建单时冻结的批准 BOM（JSON [[子件, 含损耗用量]]）：领料/报工/需求都读它
+    bom_confirmed_by: Mapped[Optional[int]] = mapped_column(Integer)  # 技术确认人（user id）；快照为空 = 待技术确认
+    bom_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    bom_confirm_note: Mapped[str] = mapped_column(String(300), default="")
     material: Mapped[Material] = relationship()
     order: Mapped[Optional[SalesOrder]] = relationship(foreign_keys=[order_id])
 
@@ -490,6 +493,9 @@ class OutsourceOrder(Base, TimestampMixin):
     order_id: Mapped[Optional[int]] = mapped_column(ForeignKey("so_order.id"))
     remark: Mapped[str] = mapped_column(Text, default="")
     bom_snapshot: Mapped[Optional[str]] = mapped_column(Text)  # 同自制任务：建单时冻结的批准 BOM
+    bom_confirmed_by: Mapped[Optional[int]] = mapped_column(Integer)  # 技术确认人（user id）；快照为空 = 待技术确认
+    bom_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    bom_confirm_note: Mapped[str] = mapped_column(String(300), default="")
     supplier: Mapped[Supplier] = relationship()
     material: Mapped[Material] = relationship()
     order: Mapped[Optional[SalesOrder]] = relationship(foreign_keys=[order_id])

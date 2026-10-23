@@ -5,6 +5,7 @@ import json
 
 from sqlalchemy.orm import Session
 
+from ..services.production import bom_state
 from ..models import (Arrival, Bom, IncomingException, KitLine, Material, OutsourceOrder, PickList,
                       PurchaseOrder, PurchaseOrderLine, Requisition, Reservation, SalesOrder,
                       ShipmentPlan, Supplier, User, WorkOrder, OrderStatus, KitStatus, Priority,
@@ -104,14 +105,16 @@ def po(db: Session, p: PurchaseOrder, with_lines: bool = True) -> dict:
 
 def wo(w: WorkOrder) -> dict:
     return {**pick(w, "id", "wo_no", "material_id", "qty", "done_qty", "planned_start", "planned_finish", "status",
-                   "source_mode", "order_id", "owner", "remark"),
+                   "source_mode", "order_id", "owner", "remark", "bom_confirmed_at", "bom_confirm_note"),
+            "bom_state": bom_state(w),
             "code": w.material.code, "name": w.material.name, "drawing_no": w.material.drawing_no,
             "order_no": w.order.order_no if getattr(w, "order", None) else ""}
 
 
 def outsource(o: OutsourceOrder) -> dict:
     return {**pick(o, "id", "os_no", "supplier_id", "material_id", "drawing_no", "qty", "price", "sent_date",
-                   "expected_return", "arrived_qty", "received_qty", "status", "source_mode", "order_id", "remark", "supply_mode"),
+                   "expected_return", "arrived_qty", "received_qty", "status", "source_mode", "order_id", "remark", "supply_mode", "bom_confirmed_at", "bom_confirm_note"),
+            "bom_state": bom_state(o),
             "supplier": o.supplier.name, "code": o.material.code, "name": o.material.name, "open_qty": o.open_qty,
             "order_no": o.order.order_no if getattr(o, "order", None) else ""}
 

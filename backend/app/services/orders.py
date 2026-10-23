@@ -200,6 +200,7 @@ def create_pick(db: Session, user: User, order_id: int, lines: list[dict] | None
 
 
 def post_pick(db: Session, user: User, pick_id: int) -> PickList:
+    from .production import require_bom_confirmed
     db.flush()  # 保留同一事务前一步服务调用的合法变更，再刷新锁定状态
     acquire_mutex(db)  # 先互斥再锁单据，与报工/退料/完工保持相同顺序
     # 行锁：同一张领料单被重复提交/并发过账时，后到者会看到 POSTED 而被拒绝，不会重复扣库存
@@ -219,11 +220,13 @@ def post_pick(db: Session, user: User, pick_id: int) -> PickList:
         if wo is None or wo.status not in ("PLANNED", "STARTED"):
             raise BizError("来源自制任务已结束或取消，该领料单不能过账（请作废）")
         assert_not_held(db, "WORK_ORDER", pk.work_order_id)
+        require_bom_confirmed(wo, "自制任务")  # 旧领料草稿也不能绕过技术确认
     elif pk.outsource_id:
         osd = db.get(OutsourceOrder, pk.outsource_id)
         if osd is None or osd.status not in ("PLANNED", "SENT", "PARTIAL"):
             raise BizError("来源外协单已结束或取消，该领料单不能过账（请作废）")
         assert_not_held(db, "OUTSOURCE", pk.outsource_id)
+        require_bom_confirmed(osd, "外协单")
     pk.status = "POSTING"
     for ln in pk.lines:
         if D(ln.qty) <= 0:
@@ -279,7 +282,7 @@ def _consumed_qty(db: Session, pk: PickList, material_id: int) -> Decimal:
             return per * D(w.done_qty)
     elif pk.outsource_id:
         x = db.get(OutsourceOrder, pk.outsource_id)
-        if x and x.status != "PLANNED":
+        if x and x.status in ("SENT", "PARTIAL", "RETURNED"):  # 计划/已取消的外协单没有把料发出去
             per = next((q for c, q in prot.bom_lines(db, x) if c == material_id), ZERO)
             return per * D(x.qty)
     return ZERO
@@ -294,6 +297,7 @@ def _issued_of(db: Session, pk: PickList, material_id: int) -> Decimal:
 
 
 def return_pick(db: Session, user: User, pick_id: int, lines: list[dict], reason: str) -> PickList:
+    from .production import require_bom_confirmed
     """退料：已过账领料单的部分/全部退回生产库（新批次入库），订单已领量同步减少。原领料记录保留。"""
     if not reason:
         raise BizError("退料必须填写原因")
@@ -310,6 +314,12 @@ def return_pick(db: Session, user: User, pick_id: int, lines: list[dict], reason
     source, ref = ((SalesOrder, pk.order_id) if pk.order_id else
                    (WorkOrder, pk.work_order_id) if pk.work_order_id else (OutsourceOrder, pk.outsource_id))
     db.scalar(select(source).where(source.id == ref).with_for_update().execution_options(populate_existing=True))
+    # 可退数量要按该任务的批准 BOM 算“已消耗”：BOM 未经技术确认的旧单据先确认再退
+    src_doc = db.get(source, ref)
+    if pk.work_order_id:
+        require_bom_confirmed(src_doc, "自制任务")
+    elif pk.outsource_id:
+        require_bom_confirmed(src_doc, "外协单")
     by_mat = {ln.material_id: ln for ln in pk.lines}
     for item in lines:
         ln = by_mat.get(item["material_id"])

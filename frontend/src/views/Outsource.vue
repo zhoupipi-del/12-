@@ -12,19 +12,22 @@
         <el-table-column label="外协单" width="140"><template #default="{ row }"><span class="no">{{ row.os_no }}</span></template></el-table-column>
         <el-table-column prop="supplier" label="外协厂" min-width="140" />
         <el-table-column prop="order_no" label="任务来源" width="145"><template #default="{ row }"><span v-if="row.source_mode === 'STOCK'">备库生产</span><span v-else class="no">{{ row.order_no }}</span></template></el-table-column>
-        <el-table-column label="物料" min-width="170"><template #default="{ row }"><span class="no">{{ row.code }}</span> {{ row.name }}</template></el-table-column>
+        <el-table-column label="物料" min-width="170"><template #default="{ row }"><span class="no">{{ row.code }}</span> {{ row.name }}<el-tag v-if="needConfirm(row)" size="small" type="danger" effect="light" style="margin-left: 6px">待技术确认BOM</el-tag></template></el-table-column>
         <el-table-column label="图号" width="150"><template #default="{ row }"><span class="no small">{{ row.drawing_no }}</span></template></el-table-column>
         <el-table-column label="数量 / 已回" width="100" align="right"><template #default="{ row }"><span class="num">{{ num(row.qty) }} / {{ num(row.received_qty) }}</span></template></el-table-column>
         <el-table-column label="发出" width="100"><template #default="{ row }"><span class="num">{{ day(row.sent_date) }}</span></template></el-table-column>
         <el-table-column label="预计回厂" width="120"><template #default="{ row }"><span class="num">{{ day(row.expected_return) }}</span><div class="small muted">{{ relDay(row.expected_return) }}</div></template></el-table-column>
         <el-table-column label="状态" width="110"><template #default="{ row }"><StatusTag :map="OS_STATUS" :value="row.status" /><div class="small muted">{{ row.supply_mode === 'CONSIGNED' ? '本厂供料' : '包工包料' }}</div></template></el-table-column>
-        <el-table-column width="170">
+        <el-table-column width="230">
           <template #default="{ row }">
+            <el-button v-if="needConfirm(row) && auth.can('TECH')" link size="small" type="danger" @click="confirmBom(row)">确认BOM</el-button>
             <template v-if="row.status === 'PLANNED'">
               <el-button link size="small" @click="dwg(row)">确认图纸</el-button>
               <el-button v-if="row.supply_mode === 'CONSIGNED'" link size="small" @click="pickRaw(row)">领料给外协</el-button>
               <el-button link size="small" type="primary" @click="send(row)">发出</el-button>
+              <el-button v-if="auth.can('BUYER', 'PLANNER')" link size="small" type="danger" @click="cancel(row)">取消</el-button>
             </template>
+            <el-button v-if="row.status === 'SENT' && Number(row.arrived_qty) === 0 && auth.can('BUYER', 'PLANNER', 'MANAGER')" link size="small" @click="recall(row)">撤回发出</el-button>
             <el-date-picker v-if="['SENT', 'PARTIAL'].includes(row.status)" v-model="row._d" size="small" value-format="YYYY-MM-DD" placeholder="改回厂日" style="width: 120px" @change="(v) => upd(row, v)" />
           </template>
         </el-table-column>
@@ -49,6 +52,8 @@
       <template #footer><el-button type="primary" @click="save">保存</el-button></template>
     </el-dialog>
 
+    <BomConfirmDialog v-model="bomOpen" kind="OUTSOURCE" :row="bomRow" @done="load" />
+
     <el-dialog v-model="dwgOpen" title="确认图纸版本" width="560px">
       <el-table :data="dwgList" size="small">
         <el-table-column prop="drawing_no" label="图号" />
@@ -63,12 +68,13 @@
 <script setup>
 import { onActivated, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { get, post, put } from '../api'
 import { useAuth } from '../store'
 import MaterialSelect from '../components/MaterialSelect.vue'
 import RefSelect from '../components/RefSelect.vue'
 import StatusTag from '../components/StatusTag.vue'
+import BomConfirmDialog from '../components/BomConfirmDialog.vue'
 import { OS_STATUS, day, num, relDay, today } from '../utils'
 
 defineOptions({ name: 'Outsource' })
@@ -83,7 +89,21 @@ const orderOpts = ref([])
 function openNew(prefill = {}) { f.value = { source_mode: 'ORDER', order_id: null, material_id: null, supplier_id: null, qty: 1, price: 0, expected_return: today(14), supply_mode: 'TURNKEY', ...prefill }; open.value = true }
 function sourceChanged(v) { if (v === 'STOCK') f.value.order_id = null }
 async function save() { await post('/outsource', f.value); open.value = false; load() }
-async function send(row) { await post(`/outsource/${row.id}/send`); ElMessage.success('已发出'); load() }
+const bomOpen = ref(false)
+const bomRow = ref(null)
+const needConfirm = (row) => row.bom_state === 'PENDING_CONFIRM' && row.supply_mode === 'CONSIGNED' && ['PLANNED', 'SENT', 'PARTIAL'].includes(row.status)
+function confirmBom(row) { bomRow.value = row; bomOpen.value = true }
+async function cancel(row) {
+  await ElMessageBox.confirm(`取消外协单 ${row.os_no}？已领的原料请到【领料】对应领料单上退回。`, '取消外协单', { type: 'warning' })
+  await post(`/outsource/${row.id}/cancel`); ElMessage.success('已取消'); load()
+}
+async function recall(row) {
+  const { value } = await ElMessageBox.prompt('外协厂尚无任何回厂记录时可以撤回发出，单据回到“待发出”，本厂供料的原料之后可以退料。请填写原因：', '撤回发出', { inputPattern: /\S+/, inputErrorMessage: '必须填写原因' })
+  await post(`/outsource/${row.id}/recall`, { reason: value }); ElMessage.success('已撤回，单据回到待发出'); load()
+}
+async function send(row) {
+  if (needConfirm(row)) return ElMessage.warning('这张外协单的 BOM 还没有经技术确认，请技术先在【确认BOM】里选定版本')
+  await post(`/outsource/${row.id}/send`); ElMessage.success('已发出'); load() }
 async function pickRaw(row) { await post(`/outsource/${row.id}/pick`); ElMessage.success('已生成领料单，请到【领料】过账出库') }
 async function upd(row, v) { if (v) { await put(`/outsource/${row.id}`, { expected_return: v }); load() } }
 const dwgOpen = ref(false)

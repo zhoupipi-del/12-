@@ -11,6 +11,7 @@ from ..db import get_db
 from ..models import (Arrival, IncomingException, Material, OutsourceOrder, PoLineRevision, PurchaseOrder,
                       PurchaseOrderLine, Requisition, RequisitionLine, Role, Supplier, User, WorkOrder)
 from ..services import production as psvc
+from ..services.kitting import acquire_mutex
 from ..services import purchase as pu
 from ..services import receiving as rc
 from ..services.ai import classify_exception
@@ -241,6 +242,7 @@ def portal(token: str, db: Session = Depends(get_db)):
 @router.post("/portal/{token}/lines/{lid}/confirm")
 def portal_confirm(token: str, lid: int, body: S.PortalConfirmIn, db: Session = Depends(get_db)):
     s = _portal_supplier(db, token)
+    acquire_mutex(db)  # 令牌有效后才拿全局锁（免登录入口，无效令牌不应排队）
     pu.supplier_confirm(db, s, lid, body.promised_date, body.note)
     commit_recalc(db)
     return {"ok": True}
@@ -248,9 +250,11 @@ def portal_confirm(token: str, lid: int, body: S.PortalConfirmIn, db: Session = 
 
 # ---------------------------------------------------------------- 自制任务
 @router.get("/work-orders")
-def work_orders(status: str = "", keyword: str = "", page_no: int = 1, size: int = 50,
+def work_orders(status: str = "", keyword: str = "", bom_pending: bool = False, page_no: int = 1, size: int = 50,
                 db: Session = Depends(get_db), _: User = Depends(current_user)):
     q = select(WorkOrder).join(Material)
+    if bom_pending:  # 待技术确认 BOM 的单据
+        q = q.where(WorkOrder.bom_snapshot.is_(None), WorkOrder.status.in_(["PLANNED", "STARTED"]))
     if status:
         q = q.where(WorkOrder.status.in_(status.split(",")))
     if keyword:
@@ -306,6 +310,18 @@ def os_pick(oid: int, db: Session = Depends(get_db), u: User = Depends(require(R
     return serial.pick_list(db, p)
 
 
+@router.get("/work-orders/{wid}/bom")
+def wo_bom(wid: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    return psvc.bom_candidates(db, get_or_404(db, WorkOrder, wid, "自制任务"))
+
+
+@router.post("/work-orders/{wid}/bom-confirm")
+def wo_bom_confirm(wid: int, body: S.BomConfirmIn, db: Session = Depends(get_db), u: User = Depends(require(Role.TECH))):
+    r = psvc.confirm_bom(db, u, "WORK_ORDER", wid, bom_id=body.bom_id, use_order_bom=body.use_order_bom, reason=body.reason)
+    commit_recalc(db)
+    return {**serial.wo(r["doc"]), "warnings": r["warnings"]}
+
+
 @router.post("/work-orders/{wid}/cancel")
 def cancel_wo(wid: int, db: Session = Depends(get_db), u: User = Depends(require(Role.PLANNER))):
     w = psvc.cancel_wo(db, u, wid)
@@ -315,9 +331,12 @@ def cancel_wo(wid: int, db: Session = Depends(get_db), u: User = Depends(require
 
 # ---------------------------------------------------------------- 外协
 @router.get("/outsource")
-def outsource_list(status: str = "", page_no: int = 1, size: int = 50, db: Session = Depends(get_db),
-                   _: User = Depends(current_user)):
+def outsource_list(status: str = "", bom_pending: bool = False, page_no: int = 1, size: int = 50,
+                   db: Session = Depends(get_db), _: User = Depends(current_user)):
     q = select(OutsourceOrder)
+    if bom_pending:
+        q = q.where(OutsourceOrder.bom_snapshot.is_(None), OutsourceOrder.supply_mode == "CONSIGNED",
+                    OutsourceOrder.status.in_(["PLANNED", "SENT", "PARTIAL"]))
     if status:
         q = q.where(OutsourceOrder.status.in_(status.split(",")))
     return page(db, q.order_by(OutsourceOrder.id.desc()), page_no, size, serial.outsource)
@@ -343,6 +362,25 @@ def update_os(oid: int, body: dict, db: Session = Depends(get_db), u: User = Dep
 @router.post("/outsource/{oid}/send")
 def send_os(oid: int, db: Session = Depends(get_db), u: User = Depends(require(*BUY, Role.WAREHOUSE))):
     o = psvc.send_outsource(db, u, oid)
+    commit_recalc(db)
+    return serial.outsource(o)
+
+
+@router.get("/outsource/{oid}/bom")
+def os_bom(oid: int, db: Session = Depends(get_db), _: User = Depends(current_user)):
+    return psvc.bom_candidates(db, get_or_404(db, OutsourceOrder, oid, "外协单"))
+
+
+@router.post("/outsource/{oid}/bom-confirm")
+def os_bom_confirm(oid: int, body: S.BomConfirmIn, db: Session = Depends(get_db), u: User = Depends(require(Role.TECH))):
+    r = psvc.confirm_bom(db, u, "OUTSOURCE", oid, bom_id=body.bom_id, use_order_bom=body.use_order_bom, reason=body.reason)
+    commit_recalc(db)
+    return {**serial.outsource(r["doc"]), "warnings": r["warnings"]}
+
+
+@router.post("/outsource/{oid}/recall")
+def recall_os(oid: int, body: S.ReasonIn, db: Session = Depends(get_db), u: User = Depends(require(*BUY, Role.MANAGER))):
+    o = psvc.recall_outsource(db, u, oid, body.reason)
     commit_recalc(db)
     return serial.outsource(o)
 

@@ -10,7 +10,7 @@
     <div class="panel">
       <el-table :data="list">
         <el-table-column label="任务" width="140"><template #default="{ row }"><span class="no">{{ row.wo_no }}</span></template></el-table-column>
-        <el-table-column label="自制件" min-width="180"><template #default="{ row }"><span class="no">{{ row.code }}</span> {{ row.name }}<div class="no small muted">{{ row.drawing_no }}</div></template></el-table-column>
+        <el-table-column label="自制件" min-width="180"><template #default="{ row }"><span class="no">{{ row.code }}</span> {{ row.name }}<el-tag v-if="row.bom_state === 'PENDING_CONFIRM' && ['PLANNED', 'STARTED'].includes(row.status)" size="small" type="danger" effect="light" style="margin-left: 6px">待技术确认BOM</el-tag><div class="no small muted">{{ row.drawing_no }}</div></template></el-table-column>
         <el-table-column prop="order_no" label="任务来源" width="145"><template #default="{ row }"><span v-if="row.source_mode === 'STOCK'">备库生产</span><span v-else class="no">{{ row.order_no }}</span></template></el-table-column>
         <el-table-column label="完工 / 计划" width="110" align="right"><template #default="{ row }"><span class="num">{{ num(row.done_qty) }} / {{ num(row.qty) }}</span></template></el-table-column>
         <el-table-column label="计划开工" width="104"><template #default="{ row }"><span class="num">{{ day(row.planned_start) }}</span></template></el-table-column>
@@ -22,8 +22,9 @@
         </el-table-column>
         <el-table-column prop="owner" label="负责" width="90" />
         <el-table-column label="状态" width="86"><template #default="{ row }"><StatusTag :map="WO_STATUS" :value="row.status" /></template></el-table-column>
-        <el-table-column width="170">
+        <el-table-column width="210">
           <template #default="{ row }">
+            <el-button v-if="row.bom_state === 'PENDING_CONFIRM' && auth.can('TECH')" link size="small" type="danger" @click="confirmBom(row)">确认BOM</el-button>
             <el-button v-if="row.status === 'PLANNED' && auth.can('WORKSHOP', 'PLANNER')" link size="small" type="primary" @click="startIt(row)">开工</el-button>
             <el-button v-if="['PLANNED', 'STARTED'].includes(row.status) && auth.can('WAREHOUSE', 'WORKSHOP')" link size="small" @click="pickRaw(row)">领原料</el-button>
             <el-button v-if="row.status === 'STARTED' && auth.can('WORKSHOP')" link size="small" type="primary" @click="report(row)">报工</el-button>
@@ -47,6 +48,8 @@
       <template #footer><el-button type="primary" @click="save">保存</el-button></template>
     </el-dialog>
 
+    <BomConfirmDialog v-model="bomOpen" kind="WORK_ORDER" :row="bomRow" @done="load" />
+
     <el-dialog v-model="dwgOpen" title="开工前确认图纸版本" width="520px">
       <el-table :data="dwgList" size="small">
         <el-table-column prop="drawing_no" label="图号" />
@@ -66,6 +69,7 @@ import { get, post, put } from '../api'
 import { useAuth } from '../store'
 import MaterialSelect from '../components/MaterialSelect.vue'
 import StatusTag from '../components/StatusTag.vue'
+import BomConfirmDialog from '../components/BomConfirmDialog.vue'
 import { WO_STATUS, day, num, today } from '../utils'
 
 defineOptions({ name: 'WorkOrders' })
@@ -83,12 +87,17 @@ async function save() { await post('/work-orders', f.value); open.value = false;
 async function upd(row, d) { await put(`/work-orders/${row.id}`, d); load() }
 const dwgOpen = ref(false)
 const dwgList = ref([])
+const bomOpen = ref(false)
+const bomRow = ref(null)
+function confirmBom(row) { bomRow.value = row; bomOpen.value = true }
 let cur = null
 async function pickRaw(row) {
+  if (row.bom_state === 'PENDING_CONFIRM') return ElMessage.warning('这张任务的 BOM 还没有经技术确认，请技术先在【确认BOM】里选定版本')
   await post(`/work-orders/${row.id}/pick`)
   ElMessage.success('已生成领料单，请到【领料】过账出库')
 }
 async function startIt(row) {
+  if (row.bom_state === 'PENDING_CONFIRM') return ElMessage.warning('这张任务的 BOM 还没有经技术确认，请技术先在【确认BOM】里选定版本')
   cur = row
   dwgList.value = await get('/drawings-required', { ref_type: 'WORK_ORDER', ref_id: row.id })
   if (dwgList.value.some((d) => !d.confirmed)) { dwgOpen.value = true; return }

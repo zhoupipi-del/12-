@@ -221,8 +221,14 @@ def _boms(db, rows, errors, stats):
 
 
 def _stock(db, user, rows, errors, stats):
+    """期初库存。防重复入库：同一（物料, 仓库, 批次号）在库里只允许存在一次——已存在（哪怕已被领空）或同一文件内重复，
+    整批拒绝。重复点击、网络重试、把同一个文件再导一遍，都不会让账面库存翻倍。
+    批次号留空时系统按“INIT-行号”生成，二次导入新文件请填写批次号，避免与上次的行号批次撞车。"""
     mats = {m.code: m for m in db.scalars(select(Material)).all()}
     whs = {w.code: w for w in db.scalars(select(Warehouse)).all()}
+    existing = {(mid, wid, lot) for mid, wid, lot in db.execute(
+        select(StockLot.material_id, StockLot.warehouse_id, StockLot.lot_no)).all()}
+    in_file: set[tuple[int, int, str]] = set()
     for n, r in rows:
         try:
             m, w = mats.get(str(r.get("物料编码") or "").strip()), whs.get(str(r.get("仓库编码") or "").strip())
@@ -238,8 +244,16 @@ def _stock(db, user, rows, errors, stats):
             q = _dec(r.get("数量"), "数量")
             if q <= 0:
                 raise ValueError("数量必须大于 0")
+            lot_no = str(r.get("批次号") or f"INIT-{n}").strip()
+            key = (m.id, w.id, lot_no)
+            if key in existing:
+                raise ValueError(f"批次 {lot_no} 在仓库 {w.code} 已存在该物料的库存记录，疑似重复导入；"
+                                 "如确为新批次，请换一个批次号")
+            if key in in_file:
+                raise ValueError(f"文件内同一物料、仓库、批次号 {lot_no} 重复，请合并为一行")
+            in_file.add(key)
             lot = stock_in(db, material_id=m.id, warehouse_id=w.id, qty=q, txn_type=TxnType.ADJUST,
-                           lot_no=str(r.get("批次号") or f"INIT-{n}"), location_id=loc.id if loc else None,
+                           lot_no=lot_no, location_id=loc.id if loc else None,
                            unit_cost=_dec(r.get("单价"), "", Decimal(0)), ref_type="INIT", user_id=user.id,
                            remark="期初导入")
             d = r.get("入库日期")

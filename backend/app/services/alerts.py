@@ -12,8 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import (Alert, IncomingException, KitStatus, Material, OrderStatus, Role, SalesOrder,
-                      StockLot, Warehouse, WarehousePurpose, ZERO, now)
+from ..models import (Alert, IncomingException, KitStatus, Material, OrderStatus, OutsourceOrder, Role, SalesOrder,
+                      StockLot, WorkOrder, Warehouse, WarehousePurpose, ZERO, now)
 from .common import D
 
 def fq(v) -> str:
@@ -147,8 +147,27 @@ def scan_overdue_orders(db: Session, today: date | None = None) -> int:
     return len(keep)
 
 
+def scan_bom_confirm(db: Session) -> int:
+    """没有 BOM 快照的在制自制任务/本厂供料外协单：提醒技术确认 BOM（确认前这些单据不能开工/领料/报工/退料）。"""
+    keep: set[str] = set()
+    items = [("WORK_ORDER", x.id, x.wo_no, x) for x in db.scalars(select(WorkOrder).where(
+        WorkOrder.bom_snapshot.is_(None), WorkOrder.status.in_(["PLANNED", "STARTED"]))).all()]
+    items += [("OUTSOURCE", x.id, x.os_no, x) for x in db.scalars(select(OutsourceOrder).where(
+        OutsourceOrder.bom_snapshot.is_(None), OutsourceOrder.supply_mode == "CONSIGNED",
+        OutsourceOrder.status.in_(["PLANNED", "SENT", "PARTIAL"]))).all()]
+    for ref_type, ref_id, no, doc in items:
+        key = f"BOM_CONFIRM:{ref_type}:{ref_id}"
+        keep.add(key)
+        raise_alert(db, "BOM_CONFIRM", key, f"待技术确认 BOM：{no}（{doc.material.code} {doc.material.name}）",
+                    "旧单据或建单时尚无 BOM，没有冻结的批准版本；确认前不能开工/领料/报工/退料。"
+                    "请在单据上核对并选定采用哪一版 BOM", "WARN", Role.TECH, ref_type, ref_id)
+    _resolve_missing(db, ("BOM_CONFIRM",), keep)
+    return len(keep)
+
+
 def scan_all(db: Session, commit: bool = True) -> dict:
-    r = {"stock": scan_stock(db), "exceptions": scan_exceptions(db), "overdue": scan_overdue_orders(db)}
+    r = {"stock": scan_stock(db), "exceptions": scan_exceptions(db), "overdue": scan_overdue_orders(db),
+         "bom_confirm": scan_bom_confirm(db)}
     if commit:
         db.commit()
     return r

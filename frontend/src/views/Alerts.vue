@@ -36,7 +36,7 @@ import { get, post } from '../api'
 import { dt } from '../utils'
 
 defineOptions({ name: 'Alerts' })
-const TYPES = { SHORTAGE: '缺料', LATE_SUPPLY: '在途延误', DUE_RISK: '交期风险', ORDER_OVERDUE: '订单逾期', STOCK_LOW: '库存不足', STOCK_HIGH: '库存积压', SPARE_LOW: '备件不足', SPARE_HIGH: '备件积压', STAGNANT: '呆滞', EXC_OVERDUE: '异常超时', DRAWING_CHANGED: '图纸变更', SUPPLIER_LATE: '供应商交期晚' }
+const TYPES = { SHORTAGE: '缺料', LATE_SUPPLY: '在途延误', DUE_RISK: '交期风险', ORDER_OVERDUE: '订单逾期', STOCK_LOW: '库存不足', STOCK_HIGH: '库存积压', SPARE_LOW: '备件不足', SPARE_HIGH: '备件积压', STAGNANT: '呆滞', EXC_OVERDUE: '异常超时', DRAWING_CHANGED: '图纸变更', SUPPLIER_LATE: '供应商交期晚', BOM_CONFIRM: '待确认BOM' }
 const mine = ref('mine')
 const type = ref('')
 const list = ref([])

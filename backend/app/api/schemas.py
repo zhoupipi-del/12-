@@ -171,6 +171,13 @@ class PoLineEditIn(BaseModel):
     version: Optional[int] = None
 
 
+class BomConfirmIn(BaseModel):
+    """技术确认旧单据的 BOM：bom_id（指定版本）与 use_order_bom（沿用关联订单批准版）二选一。"""
+    bom_id: Optional[int] = None
+    use_order_bom: bool = False
+    reason: str = Field(min_length=2, max_length=300)
+
+
 class VersionReasonIn(BaseModel):
     reason: str = ""
     version: Optional[int] = None

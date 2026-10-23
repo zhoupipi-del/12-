@@ -104,10 +104,16 @@ def release(db: Session, user: User, version_id: int, change_level: str = "MINOR
     return {"version": v, "affected": affected, "held": held}
 
 
+def _order_statuses() -> tuple[str, ...]:
+    """受图纸变更约束的订单：在制的，加上“已完工、尚未发完”的（成品入库后、发货前出现安全/质量类重大变更，
+    同样要暂停发货，等技术裁定）。全部发完（SHIPPED）或取消的不再受约束。"""
+    return (*OrderStatus.ACTIVE_FOR_KIT, OrderStatus.COMPLETED)
+
+
 def _ref_active(db: Session, ref_type: str, ref_id: int) -> bool:
     if ref_type == "SALES_ORDER":
         o = db.get(SalesOrder, ref_id)
-        return bool(o and o.status in OrderStatus.ACTIVE_FOR_KIT)
+        return bool(o and o.status in _order_statuses())
     if ref_type == "WORK_ORDER":
         w = db.get(WorkOrder, ref_id)
         return bool(w and w.status in ("PLANNED", "STARTED"))
@@ -120,8 +126,8 @@ def _ref_active(db: Session, ref_type: str, ref_id: int) -> bool:
 def affected_docs(db: Session, drawing_no: str) -> dict:
     mats = [m.id for m in db.scalars(select(Material).where(Material.drawing_no == drawing_no)).all()]
     orders = []
-    for o in db.scalars(select(SalesOrder).where(SalesOrder.status.in_(OrderStatus.ACTIVE_FOR_KIT))).all():
-        if set(mats) & set(order_material_ids(db, o)):
+    for o in db.scalars(select(SalesOrder).where(SalesOrder.status.in_(_order_statuses()))).all():
+        if set(mats) & ({o.product_id} | set(order_material_ids(db, o))):  # 整机自身带图号也算（与 _ref_materials 口径一致）
             orders.append(o.order_no)
     wos = [w.wo_no for w in db.scalars(select(WorkOrder).where(WorkOrder.material_id.in_(mats),
                                                                WorkOrder.status.in_(["PLANNED", "STARTED"]))).all()] if mats else []
